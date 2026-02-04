@@ -1,0 +1,34 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+dist/
+build/
+*.egg
+
+# Virtual environments
+venv/
+.venv/
+env/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Environment
+.env
+
+# Data
+dje-monitor/data/pdfs/*.pdf
+dje-monitor/data/*.sqlite
+dje-monitor/data/db.sqlite
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log

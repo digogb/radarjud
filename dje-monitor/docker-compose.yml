@@ -1,0 +1,12 @@
+services:
+  dje-monitor:
+    build: .
+    container_name: dje-monitor
+    restart: unless-stopped
+    volumes:
+      - ./data:/app/data
+    env_file:
+      - .env
+    environment:
+      - DJE_MODO_SCHEDULER=true
+      - DJE_DATABASE_URL=sqlite:////app/data/db.sqlite
