@@ -15,6 +15,7 @@ from apscheduler.schedulers.blocking import BlockingScheduler
 from rich.console import Console
 from rich.logging import RichHandler
 from rich.table import Table
+from bs4 import BeautifulSoup
 
 from collectors.base import DiarioItem
 from collectors.djen_collector import DJENCollector
@@ -27,6 +28,7 @@ from notifiers.email_notifier import EmailNotifier
 from notifiers.telegram import MensagemOcorrencia, TelegramNotifier
 from storage.models import Base
 from storage.repository import DiarioRepository
+from utils.data_normalizer import filtrar_dados_relevantes
 
 console = Console()
 
@@ -58,6 +60,19 @@ class DJEMonitor:
         self.cpf_matcher = CPFMatcher(contexto_chars=config.contexto_chars)
         self.collectors = self._init_collectors()
         self.notifiers = self._init_notifiers()
+
+    def _limpar_conteudo(self, texto: str) -> str:
+        """Remove tags HTML e limpa espaços extras do texto."""
+        if not texto:
+            return ""
+        # Tenta remover HTML se parecer ter tags
+        if "<" in texto and ">" in texto:
+            try:
+                soup = BeautifulSoup(texto, "html.parser")
+                texto = soup.get_text(separator=" ", strip=True)
+            except Exception:
+                pass
+        return " ".join(texto.split())
 
     def _init_collectors(self) -> list:
         """Inicializa coletores baseado na configuração."""
@@ -169,24 +184,36 @@ class DJEMonitor:
                     
                     if resultados:
                          console.print(f"\n[bold green]Encontrados {len(resultados)} resultados para '{nome_busca}':[/bold green]")
-                         table = Table(show_header=True, header_style="bold magenta")
-                         table.add_column("Processo")
-                         table.add_column("Data")
-                         table.add_column("Órgão")
-                         table.add_column("Conteúdo (Resumo)")
                          
-                         for res in resultados:
-                             # Salvar/Notificar aqui se necessário
-                             processo = res.get("processo", "N/A")
-                             dt = res.get("data_disponibilizacao", str(data))
-                             orgao = res.get("orgao", "N/A")
-                             texto = res.get("texto", "")[:100].replace("\n", " ") + "..."
+                         exibir_max = 50
+                         resultados_exibir = resultados[:exibir_max]
+                         
+                         table = Table(show_header=True, header_style="bold magenta", show_lines=True)
+                         table.add_column("Processo", style="cyan", no_wrap=True)
+                         table.add_column("Data", style="green", no_wrap=True)
+                         table.add_column("Tribunal/Órgão", style="dim")
+                         table.add_column("Tipo", style="yellow")
+                         table.add_column("Destinatários")
+                         table.add_column("Resumo", max_width=50)
+                         
+                         for res in resultados_exibir:
+                             # Normalização estruturada seguindo padrão do usuário
+                             dados = filtrar_dados_relevantes(res, nome_busca)
                              
-                             table.add_row(processo, dt, orgao, texto)
+                             proc = dados["numero_processo"] or "[N/A]"
+                             dt = dados["data_disponibilizacao"] or "[S/D]"
+                             trib_orgao = f"{dados['siglaTribunal']} - {dados['nomeOrgao']}"
+                             tipo = dados["tipoComunicacao"]
+                             dests = ", ".join(dados["destinatarios"][:3]) # Limit to 3 for display
+                             resumo = dados["texto_resumo"]
+                             
+                             table.add_row(proc, dt, trib_orgao, tipo, dests, resumo)
                              
                              ocorrencias_encontradas += 1
                              
                          console.print(table)
+                         if len(resultados) > exibir_max:
+                             console.print(f"[yellow]... e mais {len(resultados) - exibir_max} resultados ocultos.[/yellow]")
                          console.print("\n")
                     else:
                         logger.info(f"Nenhum resultado para '{nome_busca}' nesta data.")
@@ -297,31 +324,44 @@ class DJEMonitor:
 
         return total_ocorrencias
 
-    def executar_busca_periodo(self, nome: str, data_inicio: date, data_fim: date):
+    def executar_busca_periodo(self, nome: str, data_inicio: date, data_fim: date, limit_pages: int = 3):
         """Executa busca por nome em um período (apenas DJEN)."""
         logger.info(f"Buscando '{nome}' de {data_inicio} a {data_fim}")
         
         for collector in self.collectors:
             if isinstance(collector, DJENCollector):
                 try:
-                    resultados = collector.buscar_por_nome(nome, data_inicio, data_fim)
+                    resultados = collector.buscar_por_nome(nome, data_inicio, data_fim, max_paginas=limit_pages)
                     if resultados:
                          console.print(f"\n[bold green]Encontrados {len(resultados)} resultados para '{nome}' ({data_inicio} a {data_fim}):[/bold green]")
-                         table = Table(show_header=True, header_style="bold magenta")
-                         table.add_column("Processo")
-                         table.add_column("Data")
-                         table.add_column("Órgão")
-                         table.add_column("Conteúdo (Resumo)")
                          
-                         for res in resultados:
-                             processo = res.get("processo", "N/A")
-                             dt = res.get("data_disponibilizacao", "")
-                             orgao = res.get("orgao", "N/A")
-                             texto = res.get("texto", "")[:100].replace("\n", " ") + "..."
+                         exibir_max = 50
+                         resultados_exibir = resultados[:exibir_max]
+
+                         table = Table(show_header=True, header_style="bold magenta", show_lines=True)
+                         table.add_column("Processo", style="cyan", no_wrap=True)
+                         table.add_column("Data", style="green", no_wrap=True)
+                         table.add_column("Tribunal/Órgão", style="dim")
+                         table.add_column("Tipo", style="yellow")
+                         table.add_column("Destinatários")
+                         table.add_column("Resumo", max_width=50)
+                         
+                         for res in resultados_exibir:
+                             # Normalização estruturada seguindo padrão do usuário
+                             dados = filtrar_dados_relevantes(res, nome)
                              
-                             table.add_row(processo, dt, orgao, texto)
+                             proc = dados["numero_processo"] or "[N/A]"
+                             dt = dados["data_disponibilizacao"] or "[S/D]"
+                             trib_orgao = f"{dados['siglaTribunal']} - {dados['nomeOrgao']}"
+                             tipo = dados["tipoComunicacao"]
+                             dests = ", ".join(dados["destinatarios"][:3])
+                             resumo = dados["texto_resumo"]
+                             
+                             table.add_row(proc, dt, trib_orgao, tipo, dests, resumo)
                          
                          console.print(table)
+                         if len(resultados) > exibir_max:
+                             console.print(f"[yellow]... e mais {len(resultados) - exibir_max} resultados ocultos.[/yellow]")
                     else:
                         console.print(f"[yellow]Nenhum resultado encontrado para '{nome}' no período.[/yellow]")
                         
@@ -405,7 +445,7 @@ def cmd_executar(args, config: Config):
         data = date.fromisoformat(args.data)
         # Se nome fornecido, busca só nesse dia
         if args.nome:
-             monitor.executar_busca_periodo(args.nome, data, data)
+             monitor.executar_busca_periodo(args.nome, data, data, limit_pages=args.paginas)
         else:
              monitor.processar_dia(data)
     else:
@@ -413,7 +453,7 @@ def cmd_executar(args, config: Config):
         if args.nome:
              hoje = date.today()
              data_inicio = hoje - timedelta(days=config.dias_retroativos)
-             monitor.executar_busca_periodo(args.nome, data_inicio, hoje)
+             monitor.executar_busca_periodo(args.nome, data_inicio, hoje, limit_pages=args.paginas)
         else:
             monitor.executar()
 
@@ -561,6 +601,7 @@ def main():
         "--dias", type=int, help="Número de dias retroativos"
     )
     p_exec.add_argument("--nome", help="Nome da parte para buscar no DJEN (substitui busca por diário)")
+    p_exec.add_argument("--paginas", type=int, default=3, help="Limite de páginas na busca por nome (default: 3)")
 
     # Comando: adicionar-cpf
     p_add = subparsers.add_parser("adicionar-cpf", help="Adicionar CPF")

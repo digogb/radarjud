@@ -104,14 +104,14 @@ class DJENCollector(BaseCollector):
         return self.buscar_por_nome(termo, data_inicio, data_fim)
 
     def buscar_por_nome(
-        self, nome: str, data_inicio: date, data_fim: date
+        self, nome: str, data_inicio: date, data_fim: date, max_paginas: int = 50
     ) -> list[dict]:
         """
         Busca comunicações no DJEN pelo Nome da Parte.
         Retorna lista de resultados estruturados.
         """
         logger.info(
-            f"Buscando '{nome}' no DJEN ({data_inicio} a {data_fim})"
+            f"Buscando '{nome}' no DJEN ({data_inicio} a {data_fim}) - Máx {max_paginas} págs"
         )
         resultados = []
 
@@ -157,8 +157,8 @@ class DJENCollector(BaseCollector):
                     params["pagina"] += 1
                     
                     # Limite de segurança para não loopar infinito
-                    if params["pagina"] > 50:
-                        logger.warning("Limite de 50 páginas atingido na busca por nome.")
+                    if params["pagina"] > max_paginas:
+                        logger.warning(f"Limite de {max_paginas} páginas atingido na busca por nome.")
                         break
                 else:
                     logger.warning(f"Erro na requisição (Pag {params['pagina']}): Status {response.status_code if response else 'None'}")
@@ -170,23 +170,8 @@ class DJENCollector(BaseCollector):
         
         return resultados
 
-        # Fallback: Endpoint de consulta (que pode ser HTML ou JSON)
-        url_consulta = f"{self.BASE_URL}/consulta"
-        params_consulta = {
-            "nomeParte": nome,
-            "dataInicial": data_inicio.strftime("%Y-%m-%d"),
-            "dataFinal": data_fim.strftime("%Y-%m-%d"),
-        }
-        
-        response = self._fazer_requisicao("GET", url_consulta, params=params_consulta)
-        if not response:
-            return []
+        return resultados
 
-        if "application/json" in response.headers.get("content-type", ""):
-             return self._parse_comunicacoes_json(response.json(), nome)
-        
-        # Último recurso: HTML scraping
-        return self._parse_busca_html(response.text, nome)
 
     def _parse_comunicacoes_json(self, items: list, termo: str) -> list[dict]:
         """Parseia comunicações retornadas pela API JSON."""
