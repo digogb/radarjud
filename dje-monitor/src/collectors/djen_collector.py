@@ -28,6 +28,7 @@ class DJENCollector(BaseCollector):
     """
 
     BASE_URL = "https://comunica.pje.jus.br"
+    API_URL = "https://comunicaapi.pje.jus.br/api/v1/comunicacao"
 
     # Mapeamento de siglas para IDs de órgão no DJEN
     ORGAOS = {
@@ -93,40 +94,131 @@ class DJENCollector(BaseCollector):
     def buscar_por_termo(
         self, termo: str, data_inicio: date, data_fim: date
     ) -> list[dict]:
-        """
-        Busca publicações no DJEN contendo o termo (ex: CPF).
+        """Implementação do método abstrato - Alias para buscar_por_nome."""
+        return self.buscar_por_nome(termo, data_inicio, data_fim)
 
-        O DJEN permite busca textual, o que é mais eficiente
-        do que baixar todos os PDFs.
+    def buscar_por_termo(
+        self, termo: str, data_inicio: date, data_fim: date
+    ) -> list[dict]:
+        """Implementação do método abstrato - Alias para buscar_por_nome."""
+        return self.buscar_por_nome(termo, data_inicio, data_fim)
+
+    def buscar_por_nome(
+        self, nome: str, data_inicio: date, data_fim: date
+    ) -> list[dict]:
+        """
+        Busca comunicações no DJEN pelo Nome da Parte.
+        Retorna lista de resultados estruturados.
         """
         logger.info(
-            f"Buscando '{termo}' no DJEN ({data_inicio} a {data_fim})"
+            f"Buscando '{nome}' no DJEN ({data_inicio} a {data_fim})"
         )
         resultados = []
 
-        url = f"{self.BASE_URL}/consulta"
         params = {
-            "orgao": self.orgao_id,
-            "dataInicial": data_inicio.strftime("%Y-%m-%d"),
-            "dataFinal": data_fim.strftime("%Y-%m-%d"),
-            "texto": termo,
+            "nomeParte": nome,
+            "itensPorPagina": 100,
+            "pagina": 1,
         }
 
-        response = self._fazer_requisicao("GET", url, params=params)
+        # Loop de paginação
+        while True:
+            logger.info(f"Buscando página {params['pagina']}...")
+            try:
+                response = self._fazer_requisicao(
+                    "GET", self.API_URL, params=params, headers={"Accept": "application/json"}
+                )
+                
+                if response and response.status_code == 200:
+                    # Debug: verificar content type
+                    ct = response.headers.get("content-type", "")
+                    if "html" in ct:
+                         raise ValueError("API retornou HTML")
+
+                    data_resp = response.json()
+                    
+                    novos_items = []
+                    if "items" in data_resp:
+                        novos_items = self._parse_comunicacoes_json(data_resp["items"], nome)
+                    elif isinstance(data_resp, list):
+                         novos_items = self._parse_comunicacoes_json(data_resp, nome)
+                    
+                    if not novos_items:
+                        break
+                        
+                    resultados.extend(novos_items)
+                    
+                    # Verificar se há mais páginas (baseado no total ou apenas se trouxe items)
+                    total_count = data_resp.get("count", 0) if isinstance(data_resp, dict) else len(novos_items)
+                    # Se trouxe menos que o limite, provavelmente acabou
+                    if len(novos_items) < params["itensPorPagina"]:
+                        break
+                        
+                    params["pagina"] += 1
+                    
+                    # Limite de segurança para não loopar infinito
+                    if params["pagina"] > 50:
+                        logger.warning("Limite de 50 páginas atingido na busca por nome.")
+                        break
+                else:
+                    logger.warning(f"Erro na requisição (Pag {params['pagina']}): Status {response.status_code if response else 'None'}")
+                    break
+                    
+            except Exception as e:
+                logger.warning(f"Erro na API direta ({self.API_URL}): {e}")
+                break
+        
+        return resultados
+
+        # Fallback: Endpoint de consulta (que pode ser HTML ou JSON)
+        url_consulta = f"{self.BASE_URL}/consulta"
+        params_consulta = {
+            "nomeParte": nome,
+            "dataInicial": data_inicio.strftime("%Y-%m-%d"),
+            "dataFinal": data_fim.strftime("%Y-%m-%d"),
+        }
+        
+        response = self._fazer_requisicao("GET", url_consulta, params=params_consulta)
         if not response:
-            return resultados
+            return []
 
-        try:
-            content_type = response.headers.get("content-type", "")
-            if "application/json" in content_type:
-                data_resp = response.json()
-                resultados = self._parse_busca_json(data_resp, termo)
-            else:
-                resultados = self._parse_busca_html(response.text, termo)
-        except Exception as e:
-            logger.error(f"Erro ao parsear busca DJEN: {e}")
+        if "application/json" in response.headers.get("content-type", ""):
+             return self._parse_comunicacoes_json(response.json(), nome)
+        
+        # Último recurso: HTML scraping
+        return self._parse_busca_html(response.text, nome)
 
-        logger.info(f"Encontrados {len(resultados)} resultados para '{termo}'")
+    def _parse_comunicacoes_json(self, items: list, termo: str) -> list[dict]:
+        """Parseia comunicações retornadas pela API JSON."""
+        resultados = []
+        for item in items:
+            try:
+                # Extrair dados ricos do JSON
+                res = {
+                    "tribunal": item.get("siglaTribunal", self.tribunal),
+                    "processo": item.get("numeroProcesso", ""),
+                    "data_disponibilizacao": item.get("dataDisponibilizacao", ""),
+                    "orgao": item.get("nomeOrgao", ""),
+                    "tipo_comunicacao": item.get("tipoComunicacao", ""),
+                    "texto": item.get("texto", item.get("conteudo", "")),
+                    "meio": item.get("meio", ""),
+                    "link": item.get("link", ""),
+                    "id": item.get("id", ""),
+                    "termo_buscado": termo,
+                    "fonte": "DJEN API",
+                    # Dados extras para contexto
+                    "partes": [p.get("nome", "") for p in item.get("destinatarios", [])],
+                    "raw_data": item # Guarda dados brutos para debug
+                }
+                
+                # Se não tiver texto no item principal, tentar montar do HTML ou buscar link
+                if not res["texto"] and res["id"]:
+                     res["texto"] = f"Comunicação ID {res['id']} - Ver link: {res['link']}"
+
+                resultados.append(res)
+            except Exception as e:
+                logger.error(f"Erro ao parsear item JSON: {e}")
+                
         return resultados
 
     def obter_url_pdf_diario(self, diario_id: str) -> Optional[str]:
@@ -225,27 +317,37 @@ class DJENCollector(BaseCollector):
         soup = BeautifulSoup(html, "html.parser")
 
         # Busca por elementos que contenham resultados
-        for resultado in soup.select(
-            ".resultado, .item-resultado, tr, .card, .list-group-item"
-        ):
-            texto = resultado.get_text(strip=True)
-            if termo.replace(".", "").replace("-", "") in texto.replace(
-                ".", ""
-            ).replace("-", ""):
-                link = resultado.find("a")
-                url = ""
-                if link:
-                    url = urljoin(self.BASE_URL, link.get("href", ""))
+        # Busca por elementos que contenham resultados (cards de comunicação)
+        # Adaptado para o layout da imagem (cards com azul no topo)
+        for card in soup.select("div.card, div.resultado, app-comunicacao-card"):
+            texto_full = card.get_text(" ", strip=True)
+            
+            # Tentar extrair número do processo (padrão NNNNNNN-DD.AAAA.J.TR.OOOO)
+            proc_match = re.search(r"\d{7}-\d{2}\.\d{4}\.\d\.\d{2}\.\d{4}", texto_full)
+            processo = proc_match.group(0) if proc_match else ""
 
-                resultados.append(
-                    {
-                        "tribunal": self.tribunal,
-                        "texto": texto[:2000],
-                        "url": url,
-                        "termo_buscado": termo,
-                        "fonte": "DJEN",
-                    }
-                )
+            # Extrair data (DD/MM/AAAA)
+            data_match = re.search(r"\d{2}/\d{2}/\d{4}", texto_full)
+            data_disp = data_match.group(0) if data_match else ""
+            
+            # Extrair órgão (geralmente logo no início ou após rótulo)
+            orgao = ""
+            if "Órgão:" in texto_full:
+                parts = texto_full.split("Órgão:")
+                if len(parts) > 1:
+                    orgao = parts[1].split("\n")[0].split("Data")[0].strip()
+
+            resultados.append(
+                {
+                    "tribunal": self.tribunal,
+                    "processo": processo,
+                    "data_disponibilizacao": data_disp,
+                    "orgao": orgao,
+                    "texto": texto_full[:3000], # Limitar tamanho
+                    "termo_buscado": termo,
+                    "fonte": "DJEN HTML",
+                }
+            )
 
         return resultados
 

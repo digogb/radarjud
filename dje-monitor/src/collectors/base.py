@@ -4,6 +4,7 @@ Classe base para coletores de Diário da Justiça Eletrônico.
 
 import hashlib
 import logging
+import ssl
 import time
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
@@ -14,6 +15,25 @@ from typing import Optional
 import httpx
 
 logger = logging.getLogger(__name__)
+
+
+def create_legacy_ssl_context():
+    """Cria contexto SSL compatível com servidores governamentais legados."""
+    ctx = ssl.create_default_context()
+    try:
+        # Tenta permitir cifras antigas e baixar nível de segurança
+        # AES256-SHA é necessário para TJCE (identificado via teste)
+        ctx.set_ciphers("DEFAULT:AES256-SHA:AES128-SHA:@SECLEVEL=1")
+        
+        # Permitir conexão com servidores legados (OpenSSL 3.0+)
+        if hasattr(ssl, "OP_LEGACY_SERVER_CONNECT"):
+            ctx.options |= ssl.OP_LEGACY_SERVER_CONNECT
+    except Exception as e:
+        logger.warning(f"Aviso ao configurar SSL legado: {e}")
+
+    ctx.check_hostname = False
+    ctx.verify_mode = ssl.CERT_NONE
+    return ctx
 
 
 @dataclass
@@ -43,9 +63,11 @@ class BaseCollector(ABC):
         self.tribunal = tribunal
         self.delay = delay
         self.max_retries = max_retries
+
         self.client = httpx.Client(
             timeout=timeout,
             follow_redirects=True,
+            verify=create_legacy_ssl_context(),
             headers={
                 "User-Agent": (
                     "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "

@@ -144,9 +144,13 @@ class DJEMonitor:
             f"{total_ocorrencias} ocorrências"
         )
 
-    def processar_dia(self, data: date) -> tuple[int, int]:
+    def processar_dia(self, data: date, nome_busca: str = None) -> tuple[int, int]:
         """
-        Processa todas as publicações de um dia.
+        Processa publicações de um dia (busca por diário ou nome).
+
+        Args:
+            data: Data da publicação/disponibilização.
+            nome_busca: Se fornecido, faz busca direta por nome na API (DJEN).
 
         Returns:
             Tupla (diários processados, ocorrências encontradas).
@@ -158,6 +162,38 @@ class DJEMonitor:
         for collector in self.collectors:
             collector_name = type(collector).__name__
             try:
+                # ESTRATÉGIA 1: Busca Direta por Nome (API DJEN)
+                if nome_busca and isinstance(collector, DJENCollector):
+                    logger.info(f"Busca direta por nome '{nome_busca}' no {collector_name}")
+                    resultados = collector.buscar_por_nome(nome_busca, data, data)
+                    
+                    if resultados:
+                         console.print(f"\n[bold green]Encontrados {len(resultados)} resultados para '{nome_busca}':[/bold green]")
+                         table = Table(show_header=True, header_style="bold magenta")
+                         table.add_column("Processo")
+                         table.add_column("Data")
+                         table.add_column("Órgão")
+                         table.add_column("Conteúdo (Resumo)")
+                         
+                         for res in resultados:
+                             # Salvar/Notificar aqui se necessário
+                             processo = res.get("processo", "N/A")
+                             dt = res.get("data_disponibilizacao", str(data))
+                             orgao = res.get("orgao", "N/A")
+                             texto = res.get("texto", "")[:100].replace("\n", " ") + "..."
+                             
+                             table.add_row(processo, dt, orgao, texto)
+                             
+                             ocorrencias_encontradas += 1
+                             
+                         console.print(table)
+                         console.print("\n")
+                    else:
+                        logger.info(f"Nenhum resultado para '{nome_busca}' nesta data.")
+
+                    continue # Pula listagem de edições se for busca por nome
+
+                # ESTRATÉGIA 2: Baixar Diários (Legado/e-SAJ)
                 edicoes = collector.listar_edicoes(data)
                 logger.info(
                     f"{collector_name}: {len(edicoes)} edições para {data}"
@@ -261,6 +297,37 @@ class DJEMonitor:
 
         return total_ocorrencias
 
+    def executar_busca_periodo(self, nome: str, data_inicio: date, data_fim: date):
+        """Executa busca por nome em um período (apenas DJEN)."""
+        logger.info(f"Buscando '{nome}' de {data_inicio} a {data_fim}")
+        
+        for collector in self.collectors:
+            if isinstance(collector, DJENCollector):
+                try:
+                    resultados = collector.buscar_por_nome(nome, data_inicio, data_fim)
+                    if resultados:
+                         console.print(f"\n[bold green]Encontrados {len(resultados)} resultados para '{nome}' ({data_inicio} a {data_fim}):[/bold green]")
+                         table = Table(show_header=True, header_style="bold magenta")
+                         table.add_column("Processo")
+                         table.add_column("Data")
+                         table.add_column("Órgão")
+                         table.add_column("Conteúdo (Resumo)")
+                         
+                         for res in resultados:
+                             processo = res.get("processo", "N/A")
+                             dt = res.get("data_disponibilizacao", "")
+                             orgao = res.get("orgao", "N/A")
+                             texto = res.get("texto", "")[:100].replace("\n", " ") + "..."
+                             
+                             table.add_row(processo, dt, orgao, texto)
+                         
+                         console.print(table)
+                    else:
+                        console.print(f"[yellow]Nenhum resultado encontrado para '{nome}' no período.[/yellow]")
+                        
+                except Exception as e:
+                    logger.error(f"Erro na busca por nome: {e}")
+
     def _extrair_texto(self, pdf_path: Path) -> list[tuple[int, str]]:
         """
         Extrai texto do PDF, usando OCR se necessário.
@@ -336,9 +403,19 @@ def cmd_executar(args, config: Config):
 
     if args.data:
         data = date.fromisoformat(args.data)
-        monitor.processar_dia(data)
+        # Se nome fornecido, busca só nesse dia
+        if args.nome:
+             monitor.executar_busca_periodo(args.nome, data, data)
+        else:
+             monitor.processar_dia(data)
     else:
-        monitor.executar()
+        # Se tiver nome, processar período completo de uma vez
+        if args.nome:
+             hoje = date.today()
+             data_inicio = hoje - timedelta(days=config.dias_retroativos)
+             monitor.executar_busca_periodo(args.nome, data_inicio, hoje)
+        else:
+            monitor.executar()
 
 
 def cmd_adicionar_cpf(args, config: Config):
@@ -478,12 +555,12 @@ def main():
 
     subparsers = parser.add_subparsers(dest="comando", help="Comandos disponíveis")
 
-    # Comando: executar
     p_exec = subparsers.add_parser("executar", help="Executar monitoramento")
     p_exec.add_argument("--data", help="Data específica (YYYY-MM-DD)")
     p_exec.add_argument(
         "--dias", type=int, help="Número de dias retroativos"
     )
+    p_exec.add_argument("--nome", help="Nome da parte para buscar no DJEN (substitui busca por diário)")
 
     # Comando: adicionar-cpf
     p_add = subparsers.add_parser("adicionar-cpf", help="Adicionar CPF")
