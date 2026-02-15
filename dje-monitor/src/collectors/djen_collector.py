@@ -107,7 +107,7 @@ class DJENCollector(BaseCollector):
         self, nome: str, data_inicio: date, data_fim: date, max_paginas: int = 50
     ) -> list[dict]:
         """
-        Busca comunicações no DJEN pelo Nome da Parte.
+        Busca comunicações no DJEN pelo Nome da Parte ou Número do Processo.
         Retorna lista de resultados estruturados.
         """
         logger.info(
@@ -115,11 +115,21 @@ class DJENCollector(BaseCollector):
         )
         resultados = []
 
+        # Detecção simples de número de processo (CNJ ou apenas números longos)
+        # Formato CNJ: 0000000-00.0000.0.00.0000 (20 digitos + masc)
+        termo_limpo = re.sub(r"\D", "", nome)
+        is_processo = (len(termo_limpo) >= 15 and ("-" in nome or len(termo_limpo) == 20))
+
         params = {
-            "nomeParte": nome,
             "itensPorPagina": 100,
             "pagina": 1,
         }
+
+        if is_processo:
+            params["numeroProcesso"] = nome
+            logger.info(f"Detectado busca por processo: {nome}")
+        else:
+            params["nomeParte"] = nome
 
         # Loop de paginação
         while True:
@@ -139,9 +149,9 @@ class DJENCollector(BaseCollector):
                     
                     novos_items = []
                     if "items" in data_resp:
-                        novos_items = self._parse_comunicacoes_json(data_resp["items"], nome)
+                        novos_items = self._parse_comunicacoes_json(data_resp["items"], nome, pular_filtro_destinatario=is_processo)
                     elif isinstance(data_resp, list):
-                         novos_items = self._parse_comunicacoes_json(data_resp, nome)
+                         novos_items = self._parse_comunicacoes_json(data_resp, nome, pular_filtro_destinatario=is_processo)
                     
                     if not novos_items:
                         break
@@ -162,6 +172,7 @@ class DJENCollector(BaseCollector):
                         break
                 else:
                     logger.warning(f"Erro na requisição (Pag {params['pagina']}): Status {response.status_code if response else 'None'}")
+                    # Se der erro 404 ou 500 na paginação, paramos
                     break
                     
             except Exception as e:
@@ -170,30 +181,102 @@ class DJENCollector(BaseCollector):
         
         return resultados
 
-        return resultados
 
 
-    def _parse_comunicacoes_json(self, items: list, termo: str) -> list[dict]:
+
+    def _parse_comunicacoes_json(self, items: list, termo: str, pular_filtro_destinatario: bool = False) -> list[dict]:
         """Parseia comunicações retornadas pela API JSON."""
         resultados = []
+        termo_norm = termo.strip().upper()
+
         for item in items:
             try:
-                # Extrair dados ricos do JSON
+                # Verificar dados de destinatários
+                destinatarios = item.get("destinatarios", [])
+                nomes_destinatarios = [d.get("nome", "").strip().upper() for d in destinatarios]
+                
+                # Se NÃO for busca por processo, filtrar pelo nome do destinatário
+                if not pular_filtro_destinatario:
+                    encontrou_exato = False
+                    for nome_dest in nomes_destinatarios:
+                        if nome_dest == termo_norm:
+                            encontrou_exato = True
+                            break
+                    
+                    if not encontrou_exato:
+                        continue
+
+                # Obter texto bruto (pode vir como 'texto' ou 'conteudo')
+                raw_texto = item.get("texto") or item.get("conteudo") or ""
+                texto_conteudo = self._limpar_html(raw_texto)
+
+                # Extrair dados ricos do JSON tentando múltiplas chaves
+                processo = (
+                    item.get("numeroprocessocommascara") or 
+                    item.get("numeroProcesso") or 
+                    item.get("numero_processo") or ""
+                )
+                
+                data_disp = (
+                    item.get("datadisponibilizacao") or 
+                    item.get("dataDisponibilizacao") or 
+                    item.get("data_disponibilizacao") or ""
+                )
+                
+                orgao = item.get("nomeOrgao", "")
+
+                # Fallback: Extrair do texto se não veio no JSON
+                if not processo:
+                    match_proc = re.search(r"\d{7}-\d{2}\.\d{4}\.\d\.\d{2}\.\d{4}", texto_conteudo)
+                    if match_proc:
+                        processo = match_proc.group(0)
+                
+                if not data_disp:
+                    match_data = re.search(r"\d{2}/\d{2}/\d{4}", texto_conteudo)
+                    if match_data:
+                        data_disp = match_data.group(0)
+                
+                if not orgao:
+                    # Tentar extrair sigla de tribunal ou vara do texto
+                    orgao = item.get("siglaTribunal", self.tribunal)
+
+                # Extração de polos baseada EXCLUSIVAMENTE nos dados estruturados da API
+                polos = {"ativo": [], "passivo": [], "outros": []}
+                
+                # Iterar sobre todos os destinatários retornados
+                todos_destinatarios = item.get("destinatarios", [])
+                for dest in todos_destinatarios:
+                    nome = dest.get("nome", "").strip()
+                    if not nome: continue
+                    
+                    # Tentar identificar o polo pelos campos da API (polo, tipoParte, etc)
+                    # O usuário confirmou: 'A' = Ativo, 'P' = Passivo
+                    tipo_polo = str(dest.get("polo", "")).upper()
+                    
+                    if tipo_polo == "A" or "ATIVO" in tipo_polo or "AUTOR" in tipo_polo:
+                        polos["ativo"].append(nome)
+                    elif tipo_polo == "P" or "PASSIVO" in tipo_polo or "REU" in tipo_polo or "RÉU" in tipo_polo:
+                        polos["passivo"].append(nome)
+                    else:
+                        # Se não tiver classificação, vai para lista genérica
+                        polos["outros"].append(nome)
+
                 res = {
                     "tribunal": item.get("siglaTribunal", self.tribunal),
-                    "processo": item.get("numeroProcesso", ""),
-                    "data_disponibilizacao": item.get("dataDisponibilizacao", ""),
-                    "orgao": item.get("nomeOrgao", ""),
+                    "processo": processo,
+                    "data_disponibilizacao": data_disp,
+                    "orgao": orgao,
                     "tipo_comunicacao": item.get("tipoComunicacao", ""),
-                    "texto": item.get("texto", item.get("conteudo", "")),
+                    "texto": texto_conteudo,
                     "meio": item.get("meio", ""),
                     "link": item.get("link", ""),
                     "id": item.get("id", ""),
                     "termo_buscado": termo,
                     "fonte": "DJEN API",
                     # Dados extras para contexto
-                    "partes": [p.get("nome", "") for p in item.get("destinatarios", [])],
-                    "raw_data": item # Guarda dados brutos para debug
+                    "partes": nomes_destinatarios, # Legado (filtrado pela busca)
+                    "polos": polos, # Estrutura completa
+                    "raw_data": item 
                 }
                 
                 # Se não tiver texto no item principal, tentar montar do HTML ou buscar link
@@ -205,6 +288,98 @@ class DJENCollector(BaseCollector):
                 logger.error(f"Erro ao parsear item JSON: {e}")
                 
         return resultados
+
+    def _extrair_polos_do_texto(self, texto: str) -> dict:
+        """
+        Tenta extrair polos ativo e passivo do texto da publicação usando Regex.
+        Retorna dict com listas de nomes.
+        Refinado para evitar capturar o corpo do texto.
+        """
+        if not texto:
+            return {"ativo": [], "passivo": [], "outros": []}
+            
+        polos = {"ativo": [], "passivo": [], "outros": []}
+        texto_upper = texto.upper()
+        
+        # Regex patterns refinados
+        # Pega até encontrar :, \n, ou ponto final (exceto abreviações comuns protejidas depois)
+        # Limita a captura para evitar pegar o texto inteiro
+        patterns = {
+            "ativo": [
+                r"(?:AUTOR|EXEQUENTE|REQUERENTE|IMPETRANTE|EMBARGANTE|SUSCITANTE|APELANTE|AGRAVANTE|RECORRENTE)[AEIS]*\s*[:]\s*([^:\n]{3,180})"
+            ],
+            "passivo": [
+                r"(?:R[ÉE]U|EXECUTADO|REQUERIDO|IMPETRADO|EMBARGADO|SUSCITADO|APELADO|AGRAVADO|RECORRIDO)[AEIS]*\s*[:]\s*([^:\n]{3,180})"
+            ],
+            "outros": [
+                r"(?:ADVOGAD[OA]|PATRONO)[S]*\s*[:]\s*([^:\n]{3,180})"
+            ]
+        }
+        
+        # Expressão para limpar o nome capturado
+        def limpar_nome(raw_nome):
+            # Remove marcadores de fim comuns que possam ter vindo
+            # Pára em " - ", " Advogado", " Juiz", etc
+            token_fim = re.split(r"\s-\s|ADVOGAD|R[ÉE]U|AUTOR|JUIZ|OAB|CPF|CNPJ|\.\s|;|(?:\s\w{2}\s)", raw_nome)
+            nome = token_fim[0]
+            return nome.strip().title()
+
+        for tipo, lista_patterns in patterns.items():
+            for pat in lista_patterns:
+                matches = re.finditer(pat, texto_upper)
+                for match in matches:
+                    conteudo = match.group(1)
+                    # Se tiver vírgula, pode ser lista de nomes
+                    nomes_brutos = conteudo.split(',')
+                    
+                    for nb in nomes_brutos:
+                        nome_limpo = limpar_nome(nb)
+                        
+                        # Critérios de Aceite:
+                        # 1. Tamanho razoável (3 a 80 chars)
+                        # 2. Não deve ser uma frase longa (contar palavras)
+                        if 3 < len(nome_limpo) < 80:
+                            # Se tiver mais de 10 palavras, provavelmente é lixo
+                            if len(nome_limpo.split()) > 10:
+                                continue
+                                
+                            # Filtrar "nomes" que são na verdade inícios de frases comuns
+                            if nome_limpo.upper() in ["A", "O", "OS", "AS", "DE", "DA", "DO", "EM", "NA", "NO"]:
+                                continue
+                                
+                            if nome_limpo not in polos[tipo]:
+                                polos[tipo].append(nome_limpo)
+                            
+        return polos
+
+    def _limpar_html(self, html_content: str) -> str:
+        """Limpa tags HTML e retira apenas o texto legível."""
+        if not html_content:
+            return ""
+        try:
+            soup = BeautifulSoup(html_content, "html.parser")
+            
+            # Remover scripts e estilos
+            for script in soup(["script", "style", "header", "footer", "nav"]):
+                script.decompose()
+
+            # Quebrar linhas em tags de bloco para garantir separação
+            for br in soup.find_all("br"):
+                br.replace_with("\n")
+            for tag in soup.find_all(["p", "div", "li", "tr"]):
+                tag.insert_after("\n")
+
+            text = soup.get_text(separator="\n")
+            
+            # Limpar espaços extras
+            lines = (line.strip() for line in text.splitlines())
+            chunks = (phrase.strip() for line in lines for phrase in line.split("  "))
+            text = '\n'.join(chunk for chunk in chunks if chunk)
+            
+            return text
+        except Exception as e:
+            logger.warning(f"Erro ao limpar HTML: {e}")
+            return html_content
 
     def obter_url_pdf_diario(self, diario_id: str) -> Optional[str]:
         """Obtém URL de download do PDF de um diário específico."""
