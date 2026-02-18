@@ -5,9 +5,27 @@ Foca nos campos estritamente solicitados pelo usuário para integridade de arqui
 
 import re
 import hashlib
+import json
+import unicodedata
 from datetime import datetime
 from typing import Dict, Any, List
 from bs4 import BeautifulSoup
+
+def normalizar_nome(nome: str) -> str:
+    """Normaliza nome para comparação: strip, upper, remove acentos.
+
+    Exemplos:
+        'JOÃO DA SILVA' → 'JOAO DA SILVA'
+        'josé ribeiro'  → 'JOSE RIBEIRO'
+    """
+    if not nome:
+        return ""
+    # NFKD decompõe caracteres acentuados em base + marca diacrítica
+    decomposto = unicodedata.normalize("NFKD", nome)
+    # Remove marcas diacríticas (categoria 'Mn' = Non-spacing Mark)
+    sem_acento = "".join(c for c in decomposto if unicodedata.category(c) != "Mn")
+    return sem_acento.strip().upper()
+
 
 def limpar_html(texto: str) -> str:
     """Remove tags HTML e normaliza espaços."""
@@ -67,6 +85,25 @@ def extrair_resumo_simples(texto_completo: str) -> str:
     """Gera um resumo limpo do texto."""
     texto = limpar_html(texto_completo)
     return texto[:300] + ("..." if len(texto) > 300 else "")
+
+def gerar_hash_publicacao(item: Dict[str, Any]) -> str:
+    """
+    Gera um hash SHA256 único para uma publicação do DJEN.
+    Usado para deduplicação no monitoramento de pessoas.
+    Usa o ID da comunicação quando disponível; caso contrário, usa chave composta.
+    """
+    comunicacao_id = item.get("id", "") or item.get("comunicacao_id", "")
+    if comunicacao_id:
+        raw = f"djen:{comunicacao_id}"
+    else:
+        raw = json.dumps({
+            "tribunal": item.get("siglaTribunal") or item.get("tribunal", ""),
+            "processo": item.get("numero_processo") or item.get("processo", ""),
+            "data": item.get("data_disponibilizacao") or item.get("datadisponibilizacao", ""),
+            "tipo": item.get("tipoComunicacao") or item.get("tipo_comunicacao", ""),
+        }, sort_keys=True)
+    return hashlib.sha256(raw.encode()).hexdigest()
+
 
 def filtrar_dados_relevantes(item_bruto: Dict[str, Any], termo_monitorado: str) -> Dict[str, Any]:
     """

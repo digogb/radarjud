@@ -1,21 +1,39 @@
 services:
-  dje-monitor:
-    build: .
-    container_name: dje-monitor
+  postgres:
+    image: postgres:16-alpine
+    container_name: dje-monitor-postgres
     restart: unless-stopped
-    volumes:
-      - ./data:/app/data
-    env_file:
-      - .env
     environment:
-      - DJE_MODO_SCHEDULER=true
-      - DJE_DATABASE_URL=sqlite:////app/data/db.sqlite
+      POSTGRES_DB: dje_monitor
+      POSTGRES_USER: dje
+      POSTGRES_PASSWORD: dje_secret
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U dje -d dje_monitor"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    container_name: dje-monitor-redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
 
   api:
     build: .
     container_name: dje-monitor-api
     entrypoint: []
-    command: uvicorn api:app --host 0.0.0.0 --port 8000 --reload
+    command: uvicorn api:app --host 0.0.0.0 --port 8000
     ports:
       - "8000:8000"
     volumes:
@@ -24,21 +42,51 @@ services:
     env_file:
       - .env
     environment:
-      - DJE_DATABASE_URL=sqlite:////app/data/db.sqlite
+      - DJE_DATABASE_URL=postgresql://dje:dje_secret@postgres:5432/dje_monitor
+      - DJE_REDIS_URL=redis://redis:6379/0
+      - DJE_MONITOR_HABILITADO=true
+      - DJE_MONITOR_INTERVAL_MINUTES=30
+      - DJE_MONITOR_MAX_PAGINAS=10
     restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  worker:
+    build: .
+    container_name: dje-monitor-worker
+    entrypoint: []
+    command: python -m dramatiq tasks --processes 1 --threads 8
+    volumes:
+      - ./data:/app/data
+      - ./src:/app/src
+    env_file:
+      - .env
+    environment:
+      - DJE_DATABASE_URL=postgresql://dje:dje_secret@postgres:5432/dje_monitor
+      - DJE_REDIS_URL=redis://redis:6379/0
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
 
   web:
-    build: 
+    build:
       context: ./web
+      args:
+        - VITE_API_URL=https://radarjud.rglabs.tech
     container_name: dje-monitor-web
     ports:
-      - "5173:5173"
+      - "80:80"
     volumes:
-      - ./web:/app
-      - /app/node_modules
-    environment:
-      # URL da API acessível pelo browser do usuário
-      - VITE_API_URL=http://localhost:8000
+      - ./web/nginx.conf:/etc/nginx/conf.d/default.conf
+    restart: unless-stopped
     depends_on:
       - api
-    restart: unless-stopped
+
+volumes:
+  postgres_data:

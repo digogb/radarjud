@@ -12,7 +12,7 @@ function App() {
   const navItems = [
     { path: '/', icon: LayoutDashboard, label: 'Dashboard' },
     { path: '/busca', icon: Search, label: 'Buscar Processo' },
-    { path: '/monitorados', icon: Eye, label: 'Monitorados' },
+    { path: '/monitorados', icon: Eye, label: 'Pessoas Monitoradas' },
   ]
 
   return (

@@ -58,6 +58,16 @@ class Config:
     # Matcher
     contexto_chars: int = int(os.getenv("DJE_CONTEXTO_CHARS", "500"))
 
+    # Monitor de Pessoas
+    monitor_habilitado: bool = os.getenv("DJE_MONITOR_HABILITADO", "true").lower() == "true"
+    monitor_interval_minutes: int = int(os.getenv("DJE_MONITOR_INTERVAL_MINUTES", "30"))
+    monitor_max_paginas: int = int(os.getenv("DJE_MONITOR_MAX_PAGINAS", "10"))
+
+    # Redis / Task queue
+    redis_url: str = os.getenv("DJE_REDIS_URL", "redis://localhost:6379/0")
+    worker_threads: int = int(os.getenv("DJE_WORKER_THREADS", "8"))
+    rate_limit_per_second: float = float(os.getenv("DJE_RATE_LIMIT_PER_SEC", "2.0"))
+
     def __post_init__(self):
         self.base_dir = Path(self.base_dir)
         self.data_dir = self.base_dir / "data"

@@ -91,7 +91,7 @@ export default function Dashboard() {
             </div>
           </div>
           <div className="stat-value">{resumo?.totalProcessos || 0}</div>
-          <div className="stat-label">Processos Cadastrados</div>
+          <div className="stat-label">Publicações Encontradas</div>
         </div>
 
         <div className="stat-card accent animate-fadeIn delay-2">
@@ -101,7 +101,7 @@ export default function Dashboard() {
             </div>
           </div>
           <div className="stat-value">{resumo?.processosMonitorados || 0}</div>
-          <div className="stat-label">Em Monitoramento</div>
+          <div className="stat-label">Pessoas Monitoradas</div>
         </div>
 
         <div className="stat-card warning animate-fadeIn delay-3">
@@ -157,17 +157,20 @@ export default function Dashboard() {
               <div
                 key={alteracao.id}
                 className="alert-item"
-                onClick={() => navigate(`/processo/${alteracao.processoId}`)}
+                onClick={() => navigate('/monitorados')}
               >
                 <div className="alert-icon new">
                   <AlertCircle size={20} />
                 </div>
                 <div className="alert-content">
                   <div className="alert-title">
-                    {alteracao.tipo === 'NOVA_MOVIMENTACAO' ? 'Nova Movimentação' : alteracao.tipo}
+                    {alteracao.dadosNovos?.pessoa
+                      ? `${alteracao.dadosNovos.pessoa} — Nova Publicação`
+                      : alteracao.tipo === 'NOVA_PUBLICACAO' ? 'Nova Publicação' : alteracao.tipo}
                   </div>
                   <div className="alert-description">
-                    Processo: {alteracao.processo?.numeroUnificado || alteracao.processoId}
+                    {alteracao.dadosNovos?.tribunal && `${alteracao.dadosNovos.tribunal} · `}
+                    {alteracao.dadosNovos?.tipo_comunicacao || alteracao.processo?.numeroUnificado || alteracao.processoId}
                   </div>
                   <div className="alert-time">
                     {formatDistanceToNow(new Date(alteracao.detectadoEm), {

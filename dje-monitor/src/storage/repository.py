@@ -5,14 +5,15 @@ Fornece interface para criar, buscar e atualizar registros
 de CPFs monitorados, diários processados e ocorrências.
 """
 
+import json
 import logging
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from typing import Optional
 
-from sqlalchemy import create_engine
-from sqlalchemy.orm import Session, sessionmaker
+from sqlalchemy import create_engine, func
+from sqlalchemy.orm import Session, sessionmaker, joinedload
 
-from .models import Base, CPFMonitorado, DiarioProcessado, Ocorrencia
+from .models import Base, CPFMonitorado, DiarioProcessado, Ocorrencia, PessoaMonitorada, PublicacaoMonitorada, Alerta
 
 logger = logging.getLogger(__name__)
 
@@ -21,7 +22,18 @@ class DiarioRepository:
     """Repositório principal do DJE Monitor."""
 
     def __init__(self, database_url: str):
-        self.engine = create_engine(database_url, echo=False)
+        connect_args = {}
+        if database_url.startswith("sqlite"):
+            connect_args = {"check_same_thread": False}
+        self.engine = create_engine(
+            database_url,
+            echo=False,
+            pool_size=10,
+            max_overflow=20,
+            pool_pre_ping=True,
+            pool_recycle=3600,
+            connect_args=connect_args,
+        )
         Base.metadata.create_all(self.engine)
         self.SessionLocal = sessionmaker(bind=self.engine)
 
@@ -274,6 +286,502 @@ class DiarioRepository:
                 }
                 for oc, diario, cpf_m in results
             ]
+
+    # ===== Pessoas Monitoradas =====
+
+    def adicionar_pessoa(
+        self,
+        nome: str,
+        cpf: Optional[str] = None,
+        tribunal_filtro: Optional[str] = None,
+        intervalo_horas: int = 24,
+        numero_processo: Optional[str] = None,
+        comarca: Optional[str] = None,
+        uf: Optional[str] = None,
+        data_prazo: Optional[date] = None,
+        data_expiracao: Optional[date] = None,
+        origem_importacao: Optional[str] = None,
+    ) -> PessoaMonitorada:
+        """Adiciona uma pessoa para monitoramento.
+
+        Deduplicação: busca por CPF primeiro, depois por nome.
+        Se encontrar existente: enriquece campos nulos e reativa se inativo.
+        """
+        with self.get_session() as session:
+            existente = None
+
+            # Busca por CPF (identidade mais forte)
+            if cpf:
+                existente = (
+                    session.query(PessoaMonitorada)
+                    .filter(PessoaMonitorada.cpf == cpf)
+                    .first()
+                )
+
+            # Fallback: busca por nome (case-insensitive)
+            if not existente:
+                existente = (
+                    session.query(PessoaMonitorada)
+                    .filter(func.lower(PessoaMonitorada.nome) == nome.lower())
+                    .first()
+                )
+
+            if existente:
+                # Enriquecer campos nulos com dados novos
+                if cpf and not existente.cpf:
+                    existente.cpf = cpf
+                if numero_processo and not existente.numero_processo:
+                    existente.numero_processo = numero_processo
+                if comarca and not existente.comarca:
+                    existente.comarca = comarca
+                if uf and not existente.uf:
+                    existente.uf = uf
+                if data_prazo and not existente.data_prazo:
+                    existente.data_prazo = data_prazo
+                if data_expiracao and not existente.data_expiracao:
+                    existente.data_expiracao = data_expiracao
+                if origem_importacao and not existente.origem_importacao:
+                    existente.origem_importacao = origem_importacao
+                if not existente.ativo:
+                    existente.ativo = True
+                    existente.proximo_check = datetime.utcnow()
+                existente.atualizado_em = datetime.utcnow()
+                session.commit()
+                session.refresh(existente)
+                session.expunge(existente)
+                return existente
+
+            pessoa = PessoaMonitorada(
+                nome=nome,
+                cpf=cpf,
+                tribunal_filtro=tribunal_filtro,
+                intervalo_horas=intervalo_horas,
+                numero_processo=numero_processo,
+                comarca=comarca,
+                uf=uf,
+                data_prazo=data_prazo,
+                data_expiracao=data_expiracao,
+                origem_importacao=origem_importacao,
+                proximo_check=datetime.utcnow(),
+            )
+            session.add(pessoa)
+            session.commit()
+            session.refresh(pessoa)
+            session.expunge(pessoa)
+            logger.info(f"Pessoa adicionada para monitoramento: {nome}")
+            return pessoa
+
+    def listar_pessoas(self, apenas_ativas: bool = True) -> list[dict]:
+        """Lista pessoas monitoradas com contagem de alertas não lidos."""
+        with self.get_session() as session:
+            query = session.query(PessoaMonitorada)
+            if apenas_ativas:
+                query = query.filter_by(ativo=True)
+            pessoas = query.order_by(PessoaMonitorada.criado_em.desc()).all()
+
+            result = []
+            for p in pessoas:
+                alertas_nao_lidos = (
+                    session.query(func.count(Alerta.id))
+                    .filter(Alerta.pessoa_id == p.id, Alerta.lido == False)
+                    .scalar()
+                ) or 0
+                result.append({
+                    "id": p.id,
+                    "nome": p.nome,
+                    "cpf": p.cpf,
+                    "tribunal_filtro": p.tribunal_filtro,
+                    "ativo": p.ativo,
+                    "intervalo_horas": p.intervalo_horas,
+                    "ultimo_check": p.ultimo_check.isoformat() if p.ultimo_check else None,
+                    "proximo_check": p.proximo_check.isoformat() if p.proximo_check else None,
+                    "total_publicacoes": p.total_publicacoes,
+                    "total_alertas_nao_lidos": alertas_nao_lidos,
+                    "numero_processo": p.numero_processo,
+                    "comarca": p.comarca,
+                    "uf": p.uf,
+                    "data_prazo": p.data_prazo.isoformat() if p.data_prazo else None,
+                    "data_expiracao": p.data_expiracao.isoformat() if p.data_expiracao else None,
+                    "origem_importacao": p.origem_importacao,
+                    "criado_em": p.criado_em.isoformat(),
+                    "atualizado_em": p.atualizado_em.isoformat(),
+                })
+            return result
+
+    def obter_pessoa(self, pessoa_id: int) -> Optional[dict]:
+        """Obtém detalhes de uma pessoa monitorada."""
+        with self.get_session() as session:
+            p = session.get(PessoaMonitorada, pessoa_id)
+            if not p:
+                return None
+            alertas_nao_lidos = (
+                session.query(func.count(Alerta.id))
+                .filter(Alerta.pessoa_id == p.id, Alerta.lido == False)
+                .scalar()
+            ) or 0
+            return {
+                "id": p.id,
+                "nome": p.nome,
+                "cpf": p.cpf,
+                "tribunal_filtro": p.tribunal_filtro,
+                "ativo": p.ativo,
+                "intervalo_horas": p.intervalo_horas,
+                "ultimo_check": p.ultimo_check.isoformat() if p.ultimo_check else None,
+                "proximo_check": p.proximo_check.isoformat() if p.proximo_check else None,
+                "total_publicacoes": p.total_publicacoes,
+                "total_alertas_nao_lidos": alertas_nao_lidos,
+                "numero_processo": p.numero_processo,
+                "comarca": p.comarca,
+                "uf": p.uf,
+                "data_prazo": p.data_prazo.isoformat() if p.data_prazo else None,
+                "data_expiracao": p.data_expiracao.isoformat() if p.data_expiracao else None,
+                "origem_importacao": p.origem_importacao,
+                "criado_em": p.criado_em.isoformat(),
+                "atualizado_em": p.atualizado_em.isoformat(),
+            }
+
+    def obter_pessoa_orm(self, pessoa_id: int) -> Optional[PessoaMonitorada]:
+        """Retorna o objeto ORM PessoaMonitorada (detachado da sessão) ou None."""
+        with self.get_session() as session:
+            p = session.get(PessoaMonitorada, pessoa_id)
+            if not p:
+                return None
+            session.expunge(p)
+            return p
+
+    def desativar_expirados(self) -> int:
+        """Desativa pessoas cujo data_expiracao já passou. Retorna quantidade desativada."""
+        with self.get_session() as session:
+            hoje = date.today()
+            expirados = (
+                session.query(PessoaMonitorada)
+                .filter(
+                    PessoaMonitorada.ativo == True,
+                    PessoaMonitorada.data_expiracao != None,
+                    PessoaMonitorada.data_expiracao < hoje,
+                )
+                .all()
+            )
+            for p in expirados:
+                p.ativo = False
+                p.atualizado_em = datetime.utcnow()
+            session.commit()
+            if expirados:
+                logger.info(f"{len(expirados)} monitoramento(s) expirado(s) desativado(s)")
+            return len(expirados)
+
+    def atualizar_pessoa(self, pessoa_id: int, **kwargs) -> Optional[dict]:
+        """Atualiza campos de uma pessoa monitorada."""
+        campos_permitidos = {
+            "nome", "cpf", "tribunal_filtro", "ativo", "intervalo_horas",
+            "numero_processo", "comarca", "uf", "data_prazo", "data_expiracao", "origem_importacao",
+        }
+        with self.get_session() as session:
+            p = session.get(PessoaMonitorada, pessoa_id)
+            if not p:
+                return None
+            for campo, valor in kwargs.items():
+                if campo in campos_permitidos:
+                    setattr(p, campo, valor)
+            p.atualizado_em = datetime.utcnow()
+            session.commit()
+        return self.obter_pessoa(pessoa_id)
+
+    def desativar_pessoa(self, pessoa_id: int) -> bool:
+        """Desativa monitoramento de uma pessoa (soft delete)."""
+        with self.get_session() as session:
+            p = session.get(PessoaMonitorada, pessoa_id)
+            if p:
+                p.ativo = False
+                p.atualizado_em = datetime.utcnow()
+                session.commit()
+                logger.info(f"Pessoa {pessoa_id} ({p.nome}) desativada")
+                return True
+            return False
+
+    def pessoas_para_verificar(self) -> list[PessoaMonitorada]:
+        """Retorna pessoas ativas cuja hora de verificação já chegou."""
+        with self.get_session() as session:
+            agora = datetime.utcnow()
+            results = (
+                session.query(PessoaMonitorada)
+                .filter(
+                    PessoaMonitorada.ativo == True,
+                    (PessoaMonitorada.proximo_check == None) | (PessoaMonitorada.proximo_check <= agora),
+                )
+                .all()
+            )
+            for obj in results:
+                session.expunge(obj)
+            return results
+
+    def pessoas_para_verificar_batch(self, limit: int = 500) -> list[PessoaMonitorada]:
+        """Retorna até `limit` pessoas ordenadas por proximo_check para processamento em lote."""
+        with self.get_session() as session:
+            agora = datetime.utcnow()
+            results = (
+                session.query(PessoaMonitorada)
+                .filter(
+                    PessoaMonitorada.ativo == True,
+                    (PessoaMonitorada.proximo_check == None) | (PessoaMonitorada.proximo_check <= agora),
+                )
+                .order_by(PessoaMonitorada.proximo_check.asc().nullsfirst())
+                .limit(limit)
+                .all()
+            )
+            for obj in results:
+                session.expunge(obj)
+            return results
+
+    def atualizar_ultimo_check(self, pessoa_id: int) -> None:
+        """Atualiza ultimo_check e calcula proximo_check."""
+        with self.get_session() as session:
+            p = session.get(PessoaMonitorada, pessoa_id)
+            if p:
+                agora = datetime.utcnow()
+                p.ultimo_check = agora
+                p.proximo_check = agora + timedelta(hours=p.intervalo_horas)
+                session.commit()
+
+    def atualizar_total_publicacoes(self, pessoa_id: int) -> None:
+        """Atualiza contador desnormalizado de publicações."""
+        with self.get_session() as session:
+            total = (
+                session.query(func.count(PublicacaoMonitorada.id))
+                .filter_by(pessoa_id=pessoa_id)
+                .scalar()
+            ) or 0
+            p = session.get(PessoaMonitorada, pessoa_id)
+            if p:
+                p.total_publicacoes = total
+                session.commit()
+
+    # ===== Publicações Monitoradas =====
+
+    def publicacao_existe(self, hash_unico: str) -> bool:
+        """Verifica se uma publicação já foi registrada (deduplicação)."""
+        with self.get_session() as session:
+            return (
+                session.query(PublicacaoMonitorada)
+                .filter_by(hash_unico=hash_unico)
+                .first()
+            ) is not None
+
+    def registrar_publicacao(
+        self,
+        pessoa_id: int,
+        dados: dict,
+        hash_unico: str,
+        gerar_alerta: bool = True,
+    ) -> PublicacaoMonitorada:
+        """
+        Registra uma nova publicação encontrada para uma pessoa monitorada.
+        Se gerar_alerta=False (first check), não cria alerta.
+        """
+        with self.get_session() as session:
+            pub = PublicacaoMonitorada(
+                pessoa_id=pessoa_id,
+                hash_unico=hash_unico,
+                comunicacao_id=dados.get("id") or dados.get("comunicacao_id"),
+                tribunal=dados.get("siglaTribunal") or dados.get("tribunal", ""),
+                numero_processo=dados.get("numero_processo") or dados.get("processo", ""),
+                data_disponibilizacao=dados.get("data_disponibilizacao", ""),
+                orgao=dados.get("nomeOrgao") or dados.get("orgao", ""),
+                tipo_comunicacao=dados.get("tipoComunicacao") or dados.get("tipo_comunicacao", ""),
+                texto_resumo=dados.get("texto_resumo", "")[:500] if dados.get("texto_resumo") else (dados.get("texto", "")[:500] if dados.get("texto") else ""),
+                texto_completo=dados.get("texto", ""),
+                link=dados.get("link", ""),
+                polos_json=json.dumps(dados.get("polos", {}), ensure_ascii=False),
+                destinatarios_json=json.dumps(dados.get("destinatarios", []), ensure_ascii=False),
+            )
+            session.add(pub)
+            session.commit()
+            session.refresh(pub)
+            session.expunge(pub)
+            return pub
+
+    def listar_publicacoes_pessoa(self, pessoa_id: int, limit: int = 100) -> list[dict]:
+        """Lista publicações de uma pessoa monitorada."""
+        with self.get_session() as session:
+            pubs = (
+                session.query(PublicacaoMonitorada)
+                .filter_by(pessoa_id=pessoa_id)
+                .order_by(PublicacaoMonitorada.criado_em.desc())
+                .limit(limit)
+                .all()
+            )
+            return [
+                {
+                    "id": p.id,
+                    "tribunal": p.tribunal,
+                    "numero_processo": p.numero_processo,
+                    "data_disponibilizacao": p.data_disponibilizacao,
+                    "orgao": p.orgao,
+                    "tipo_comunicacao": p.tipo_comunicacao,
+                    "texto_resumo": p.texto_resumo,
+                    "link": p.link,
+                    "criado_em": p.criado_em.isoformat(),
+                }
+                for p in pubs
+            ]
+
+    # ===== Alertas =====
+
+    def registrar_alerta(
+        self,
+        pessoa_id: int,
+        publicacao_id: int,
+        tipo: str = "NOVA_PUBLICACAO",
+        titulo: str = "",
+        descricao: str = "",
+    ) -> Alerta:
+        """Registra um alerta de nova publicação."""
+        with self.get_session() as session:
+            alerta = Alerta(
+                pessoa_id=pessoa_id,
+                publicacao_id=publicacao_id,
+                tipo=tipo,
+                titulo=titulo,
+                descricao=descricao,
+            )
+            session.add(alerta)
+            session.commit()
+            session.refresh(alerta)
+            session.expunge(alerta)
+            return alerta
+
+    def marcar_alerta_notificado(self, alerta_id: int, canal: str) -> None:
+        """Marca que o alerta foi enviado por um canal específico (telegram ou email)."""
+        with self.get_session() as session:
+            a = session.get(Alerta, alerta_id)
+            if a:
+                if canal == "telegram":
+                    a.notificado_telegram = True
+                elif canal == "email":
+                    a.notificado_email = True
+                session.commit()
+
+    def listar_alertas(
+        self,
+        pessoa_id: Optional[int] = None,
+        lido: Optional[bool] = None,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> list[dict]:
+        """Lista alertas com dados da pessoa e publicação."""
+        with self.get_session() as session:
+            query = (
+                session.query(Alerta, PessoaMonitorada, PublicacaoMonitorada)
+                .join(PessoaMonitorada, Alerta.pessoa_id == PessoaMonitorada.id)
+                .join(PublicacaoMonitorada, Alerta.publicacao_id == PublicacaoMonitorada.id)
+            )
+            if pessoa_id is not None:
+                query = query.filter(Alerta.pessoa_id == pessoa_id)
+            if lido is not None:
+                query = query.filter(Alerta.lido == lido)
+            rows = (
+                query.order_by(Alerta.criado_em.desc())
+                .offset(offset)
+                .limit(limit)
+                .all()
+            )
+            return [
+                {
+                    "id": a.id,
+                    "pessoa_id": a.pessoa_id,
+                    "pessoa_nome": p.nome,
+                    "tipo": a.tipo,
+                    "titulo": a.titulo,
+                    "descricao": a.descricao,
+                    "lido": a.lido,
+                    "criado_em": a.criado_em.isoformat(),
+                    "lido_em": a.lido_em.isoformat() if a.lido_em else None,
+                    "publicacao": {
+                        "id": pub.id,
+                        "tribunal": pub.tribunal,
+                        "numero_processo": pub.numero_processo,
+                        "data_disponibilizacao": pub.data_disponibilizacao,
+                        "tipo_comunicacao": pub.tipo_comunicacao,
+                        "orgao": pub.orgao,
+                        "texto_resumo": pub.texto_resumo,
+                        "link": pub.link,
+                    },
+                }
+                for a, p, pub in rows
+            ]
+
+    def contar_alertas_nao_lidos(self, pessoa_id: Optional[int] = None) -> int:
+        """Conta alertas não lidos, opcionalmente filtrando por pessoa."""
+        with self.get_session() as session:
+            query = session.query(func.count(Alerta.id)).filter(Alerta.lido == False)
+            if pessoa_id is not None:
+                query = query.filter(Alerta.pessoa_id == pessoa_id)
+            return query.scalar() or 0
+
+    def marcar_alertas_lidos(self, ids: Optional[list[int]] = None, todos: bool = False) -> int:
+        """Marca alertas como lidos. Retorna quantidade marcada."""
+        with self.get_session() as session:
+            query = session.query(Alerta).filter(Alerta.lido == False)
+            if not todos and ids:
+                query = query.filter(Alerta.id.in_(ids))
+            agora = datetime.utcnow()
+            count = 0
+            for a in query.all():
+                a.lido = True
+                a.lido_em = agora
+                count += 1
+            session.commit()
+            return count
+
+    # ===== Dashboard =====
+
+    def dashboard_stats(self) -> dict:
+        """Retorna estatísticas reais para o dashboard."""
+        with self.get_session() as session:
+            total_pessoas = (
+                session.query(func.count(PessoaMonitorada.id))
+                .filter_by(ativo=True)
+                .scalar()
+            ) or 0
+            total_publicacoes = session.query(func.count(PublicacaoMonitorada.id)).scalar() or 0
+            alertas_nao_lidos = (
+                session.query(func.count(Alerta.id)).filter_by(lido=False).scalar()
+            ) or 0
+            ultima_sync = (
+                session.query(func.max(PessoaMonitorada.ultimo_check)).scalar()
+            )
+            return {
+                "totalProcessos": total_publicacoes,
+                "processosMonitorados": total_pessoas,
+                "alteracoesNaoVistas": alertas_nao_lidos,
+                "ultimaSync": ultima_sync.isoformat() if ultima_sync else None,
+            }
+
+    def alertas_recentes_dashboard(self, limit: int = 10) -> list[dict]:
+        """Retorna alertas recentes no formato AlteracaoDetectada esperado pelo frontend."""
+        alertas = self.listar_alertas(lido=False, limit=limit)
+        return [
+            {
+                "id": str(a["id"]),
+                "processoId": a["publicacao"]["numero_processo"] or str(a["pessoa_id"]),
+                "tipo": a["tipo"],
+                "dadosAnteriores": {},
+                "dadosNovos": {
+                    "tribunal": a["publicacao"]["tribunal"],
+                    "tipo_comunicacao": a["publicacao"]["tipo_comunicacao"],
+                    "orgao": a["publicacao"]["orgao"],
+                    "pessoa": a["pessoa_nome"],
+                },
+                "detectadoEm": a["criado_em"],
+                "visualizado": a["lido"],
+                "processo": {
+                    "numeroUnificado": a["publicacao"]["numero_processo"],
+                    "tribunal": a["publicacao"]["tribunal"],
+                    "partes": [],
+                },
+            }
+            for a in alertas
+        ]
 
     def estatisticas(self) -> dict:
         """Retorna estatísticas do sistema."""

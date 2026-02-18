@@ -109,3 +109,89 @@ class Ocorrencia(Base):
             f"<Ocorrencia(cpf='{self.cpf_monitorado_id}', "
             f"diario='{self.diario_id}', pagina={self.pagina})>"
         )
+
+
+# ===== Monitoramento de Pessoas (via API DJEN por nome) =====
+
+
+class PessoaMonitorada(Base):
+    """Pessoa sendo monitorada por nome no DJe via API DJEN."""
+
+    __tablename__ = "pessoas_monitoradas"
+
+    id = Column(Integer, primary_key=True)
+    nome = Column(String(300), nullable=False, index=True)
+    cpf = Column(String(14), nullable=True, index=True)  # 11 dígitos CPF ou 14 CNPJ
+    tribunal_filtro = Column(String(10), nullable=True)  # None = todos os tribunais
+    ativo = Column(Boolean, default=True)
+    intervalo_horas = Column(Integer, default=24)
+    ultimo_check = Column(DateTime, nullable=True)
+    proximo_check = Column(DateTime, nullable=True)
+    total_publicacoes = Column(Integer, default=0)
+    # Dados de origem (planilha)
+    numero_processo = Column(String(30), nullable=True)
+    comarca = Column(String(200), nullable=True)
+    uf = Column(String(2), nullable=True)
+    data_prazo = Column(Date, nullable=True)       # Início do período de monitoramento
+    data_expiracao = Column(Date, nullable=True)   # data_prazo + 5 anos
+    origem_importacao = Column(String(50), nullable=True)  # "PLANILHA" ou "MANUAL"
+    criado_em = Column(DateTime, default=datetime.utcnow)
+    atualizado_em = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    publicacoes = relationship("PublicacaoMonitorada", back_populates="pessoa", cascade="all, delete-orphan")
+    alertas = relationship("Alerta", back_populates="pessoa", cascade="all, delete-orphan")
+
+    def __repr__(self):
+        return f"<PessoaMonitorada(nome='{self.nome}', ativo={self.ativo})>"
+
+
+class PublicacaoMonitorada(Base):
+    """Publicação encontrada para uma pessoa monitorada. Usada para deduplicação."""
+
+    __tablename__ = "publicacoes_monitoradas"
+
+    id = Column(Integer, primary_key=True)
+    pessoa_id = Column(Integer, ForeignKey("pessoas_monitoradas.id"), nullable=False, index=True)
+    hash_unico = Column(String(64), unique=True, nullable=False, index=True)
+    comunicacao_id = Column(String(100), nullable=True)
+    tribunal = Column(String(10))
+    numero_processo = Column(String(30), index=True)
+    data_disponibilizacao = Column(String(20))
+    orgao = Column(String(300))
+    tipo_comunicacao = Column(String(50))
+    texto_resumo = Column(Text)
+    texto_completo = Column(Text)
+    link = Column(Text)
+    polos_json = Column(Text)        # JSON: {"ativo": [...], "passivo": [...]}
+    destinatarios_json = Column(Text)  # JSON: ["nome1", "nome2"]
+    criado_em = Column(DateTime, default=datetime.utcnow)
+
+    pessoa = relationship("PessoaMonitorada", back_populates="publicacoes")
+    alertas = relationship("Alerta", back_populates="publicacao")
+
+    def __repr__(self):
+        return f"<PublicacaoMonitorada(processo='{self.numero_processo}', tribunal='{self.tribunal}')>"
+
+
+class Alerta(Base):
+    """Alerta gerado quando uma nova publicação é encontrada para uma pessoa monitorada."""
+
+    __tablename__ = "alertas"
+
+    id = Column(Integer, primary_key=True)
+    pessoa_id = Column(Integer, ForeignKey("pessoas_monitoradas.id"), nullable=False, index=True)
+    publicacao_id = Column(Integer, ForeignKey("publicacoes_monitoradas.id"), nullable=False)
+    tipo = Column(String(50), default="NOVA_PUBLICACAO")
+    titulo = Column(String(500))
+    descricao = Column(Text)
+    lido = Column(Boolean, default=False, index=True)
+    notificado_telegram = Column(Boolean, default=False)
+    notificado_email = Column(Boolean, default=False)
+    criado_em = Column(DateTime, default=datetime.utcnow)
+    lido_em = Column(DateTime, nullable=True)
+
+    pessoa = relationship("PessoaMonitorada", back_populates="alertas")
+    publicacao = relationship("PublicacaoMonitorada", back_populates="alertas")
+
+    def __repr__(self):
+        return f"<Alerta(pessoa_id={self.pessoa_id}, tipo='{self.tipo}', lido={self.lido})>"

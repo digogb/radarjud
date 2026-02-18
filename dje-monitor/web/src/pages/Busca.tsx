@@ -1,10 +1,12 @@
-import { useState, useEffect } from 'react'
-import { useNavigate } from 'react-router-dom'
-import { Search, FileText, Eye, EyeOff, AlertCircle, X } from 'lucide-react'
-import { processoApi, Processo } from '../services/api'
+import { useState, useEffect, useRef } from 'react'
+import { createPortal } from 'react-dom'
+import { useNavigate, useLocation } from 'react-router-dom'
+import { Search, FileText, Eye, EyeOff, AlertCircle, X, Calendar, Building, Users, Scale, ChevronDown, ChevronUp, ExternalLink, Bell, Check } from 'lucide-react'
+import { processoApi, pessoaMonitoradaApi } from '../services/api'
 
 export default function Busca() {
   const navigate = useNavigate()
+  const location = useLocation()
   const [tiposBusca, setTipoBusca] = useState<'numero' | 'cpf' | 'nome'>('nome')
   const [numero, setNumero] = useState('')
   const [cpf, setCpf] = useState('')
@@ -15,6 +17,10 @@ export default function Busca() {
   const [resultados, setResultados] = useState<any[]>([]) // Use any[] or Processo[] if interface is available
   const [buscou, setBuscou] = useState(false)
   const [error, setError] = useState('')
+  const [monitorando, setMonitorando] = useState(false)
+  const [monitoradoSucesso, setMonitoradoSucesso] = useState(false)
+  const [ultimoTermoBuscado, setUltimoTermoBuscado] = useState('')
+  const [hideMonitorar, setHideMonitorar] = useState(false)
 
   const tribunais = [
     'Todos', // Adicionado opção Todos
@@ -33,9 +39,10 @@ export default function Busca() {
     setError('')
     setLoading(true)
     setBuscou(true)
+    setMonitoradoSucesso(false)
+    setUltimoTermoBuscado(termoBusca)
 
     try {
-      // Busca principal (geralmente por nome)
       const params = { nome: termoBusca, tribunal: filtroTribunal === 'Todos' ? undefined : filtroTribunal }
       const response = await processoApi.buscar(params)
       setResultados(response.data || [])
@@ -45,6 +52,23 @@ export default function Busca() {
       setResultados([])
     } finally {
       setLoading(false)
+    }
+  }
+
+  const handleMonitorar = async () => {
+    if (!ultimoTermoBuscado) return
+    setMonitorando(true)
+    try {
+      await pessoaMonitoradaApi.criar({
+        nome: ultimoTermoBuscado,
+        tribunal_filtro: tribunal === 'Todos' ? undefined : tribunal,
+      })
+      setMonitoradoSucesso(true)
+    } catch (err: any) {
+      console.error('Erro ao monitorar:', err)
+      setError(err.response?.data?.detail || 'Erro ao adicionar monitoramento')
+    } finally {
+      setMonitorando(false)
     }
   }
 
@@ -89,9 +113,51 @@ export default function Busca() {
       setHistoricoProcesso([]);
   }
 
-  // Debug: Monitorar mudanças no estado
+  // Auto-busca ao navegar de outra página com state { nome, tribunal, autoSearch, hideMonitorar }
   useEffect(() => {
-      console.log("🔄 Estado processoSelecionado mudou:", processoSelecionado);
+    const state = location.state as { nome?: string; tribunal?: string; autoSearch?: boolean; hideMonitorar?: boolean } | null
+    if (state?.autoSearch && state.nome) {
+      setNome(state.nome)
+      const trib = state.tribunal || 'Todos'
+      setTribunal(trib)
+      if (state.hideMonitorar) setHideMonitorar(true)
+      executarBusca(state.nome, trib)
+      // Limpa o state para evitar re-execução ao recarregar
+      navigate(location.pathname, { replace: true, state: {} })
+    }
+  }, []) // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Guardar posição do scroll ao abrir o drawer
+  const scrollPosRef = useRef(0);
+
+  // Travar scroll do body quando o drawer está aberto (sem pular posição)
+  useEffect(() => {
+      if (processoSelecionado) {
+          // Salvar posição atual do scroll
+          scrollPosRef.current = window.scrollY;
+          // Travar o body na posição atual
+          document.body.style.position = 'fixed';
+          document.body.style.top = `-${scrollPosRef.current}px`;
+          document.body.style.left = '0';
+          document.body.style.right = '0';
+          document.body.style.overflow = 'hidden';
+      } else {
+          // Restaurar posição do scroll
+          document.body.style.position = '';
+          document.body.style.top = '';
+          document.body.style.left = '';
+          document.body.style.right = '';
+          document.body.style.overflow = '';
+          window.scrollTo(0, scrollPosRef.current);
+      }
+      return () => {
+          document.body.style.position = '';
+          document.body.style.top = '';
+          document.body.style.left = '';
+          document.body.style.right = '';
+          document.body.style.overflow = '';
+          window.scrollTo(0, scrollPosRef.current);
+      };
   }, [processoSelecionado]);
 
   return (
@@ -194,6 +260,38 @@ export default function Busca() {
             </span>
           </div>
 
+          {/* Banner de monitoramento */}
+          {!loading && ultimoTermoBuscado && !hideMonitorar && (
+            <div className="card mb-4" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '16px', padding: '14px 20px' }}>
+              {monitoradoSucesso ? (
+                <div style={{ display: 'flex', alignItems: 'center', gap: '10px', color: 'var(--success)' }}>
+                  <Check size={18} />
+                  <span style={{ fontSize: '0.9rem', fontWeight: 500 }}>
+                    <strong>{ultimoTermoBuscado}</strong> adicionado ao monitoramento! Publicações futuras gerarão alertas.
+                  </span>
+                </div>
+              ) : (
+                <>
+                  <span style={{ fontSize: '0.9rem', color: 'var(--text-secondary)' }}>
+                    Deseja monitorar automaticamente novas publicações de <strong style={{ color: 'var(--text-primary)' }}>{ultimoTermoBuscado}</strong>?
+                  </span>
+                  <button
+                    className="btn btn-primary btn-sm"
+                    onClick={handleMonitorar}
+                    disabled={monitorando}
+                    style={{ whiteSpace: 'nowrap', display: 'flex', alignItems: 'center', gap: '6px' }}
+                  >
+                    {monitorando
+                      ? <div className="spinner" style={{ width: '14px', height: '14px', borderWidth: '2px' }} />
+                      : <Bell size={15} />
+                    }
+                    {monitorando ? 'Adicionando...' : 'Monitorar'}
+                  </button>
+                </>
+              )}
+            </div>
+          )}
+
           {loading ? (
             <div className="loading">
               <div className="spinner" />
@@ -211,7 +309,7 @@ export default function Busca() {
             </div>
           ) : (
             <ul className="processo-list">
-              {resultados.map((item: any, idx) => (
+              {resultados.map((item: any, idx: number) => (
                 <ResultadoItem key={item.id || idx} item={item} onBuscaProcesso={handleProcessoClick} />
               ))}
             </ul>
@@ -219,152 +317,232 @@ export default function Busca() {
         </div>
       )}
       
-      {/* Drawer Lateral de Histórico */}
-      {/* Drawer Lateral de Histórico */}
-      {processoSelecionado && (
+      {/* Drawer Lateral de Detalhe do Processo */}
+      {processoSelecionado && createPortal(
           <>
-            {/* Overlay */}
-            <div 
-                className="drawer-overlay"
-                onClick={fecharHistorico}
-            />
-            
-            {/* Drawer */}
+            <div className="drawer-overlay" onClick={fecharHistorico} />
             <div className="drawer-container animate-slideInRight">
-                <div className="p-4 border-b border-border flex items-center justify-between bg-surface-hover">
-                    <div className="flex items-center gap-3">
-                        <div className="bg-primary/10 p-2 rounded-lg text-primary">
-                            <FileText size={20} />
+                {/* Header do Drawer */}
+                <div className="drawer-header">
+                    <div style={{ display: 'flex', alignItems: 'flex-start', gap: '16px', flex: 1 }}>
+                        <div className="drawer-header-icon">
+                            <Scale size={22} />
                         </div>
-                        <div>
-                            <h3 className="font-semibold text-lg">Histórico do Processo</h3>
-                            <p className="text-sm text-muted font-mono">{processoSelecionado}</p>
+                        <div style={{ flex: 1, minWidth: 0 }}>
+                            <h3 className="drawer-title">Detalhe do Processo</h3>
+                            <p className="drawer-processo-numero">{processoSelecionado}</p>
                         </div>
                     </div>
-                    <button 
+                    <button
                         onClick={fecharHistorico}
-                        className="text-muted hover:text-foreground transition-colors p-2 hover:bg-surface-active rounded-md"
-                        title="Fechar Histórico"
+                        className="drawer-close-btn"
+                        title="Fechar"
                     >
                         <X size={20} />
                     </button>
                 </div>
-                
-                <div className="flex-1 overflow-y-auto p-0 bg-background custom-scrollbar">
+
+                {/* Conteúdo do Drawer */}
+                <div className="drawer-body custom-scrollbar">
                     {loadingHistorico ? (
-                        <div className="flex flex-col items-center justify-center h-40 gap-3">
+                        <div className="loading" style={{ padding: '64px 0' }}>
                             <div className="spinner" />
-                            <span className="text-muted text-sm">Carregando histórico completo...</span>
+                            <span className="loading-text">Buscando publicações do processo...</span>
                         </div>
                     ) : historicoProcesso.length === 0 ? (
-                         <div className="text-center py-10 text-muted flex flex-col items-center gap-2">
-                            <FileText size={32} className="opacity-20" />
-                            <p>Nenhuma publicação encontrada para este processo.</p>
-                         </div>
-                    ) : (
-                        <div className="flex flex-col">
-                             <div className="sticky top-0 bg-background/95 backdrop-blur z-10 px-6 py-3 border-b border-border flex items-center justify-between text-xs text-muted uppercase tracking-wider font-semibold">
-                                <span>{historicoProcesso.length} Publicações</span>
-                                <div className="flex items-center gap-1">
-                                    <span className="w-2 h-2 rounded-full bg-primary/50"></span>
-                                    <span>Ordem Cronológica</span>
-                                </div>
-                             </div>
-                             
-                             <div className="p-4 space-y-4">
-                                {historicoProcesso.map((item, idx) => (
-                                    <HistoricoItem key={idx} item={item} />
-                                ))}
-                             </div>
+                        <div className="empty-state" style={{ padding: '48px 24px' }}>
+                            <div className="empty-icon"><FileText size={32} /></div>
+                            <h3 className="empty-title">Nenhuma publicação encontrada</h3>
+                            <p className="empty-description">Não foram encontradas publicações para este processo no DJe.</p>
                         </div>
+                    ) : (
+                        <>
+                            {/* Resumo do Processo - extraído da primeira publicação */}
+                            <DrawerResumo items={historicoProcesso} />
+
+                            {/* Lista de Publicações */}
+                            <div className="drawer-section">
+                                <div className="drawer-section-header">
+                                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                                        <FileText size={16} />
+                                        <span>{historicoProcesso.length} Publicações Encontradas</span>
+                                    </div>
+                                </div>
+                                <div className="drawer-publicacoes">
+                                    {historicoProcesso.map((item, idx) => (
+                                        <DrawerPublicacaoItem key={idx} item={item} index={idx} />
+                                    ))}
+                                </div>
+                            </div>
+                        </>
                     )}
                 </div>
             </div>
-          </>
+          </>,
+          document.body     
       )}
     </div>
   )
 }
 
-function HistoricoItem({ item }: { item: any }) {
-    const [expandido, setExpandido] = useState(false);
-    const texto = item.texto || "";
-    
-    // Formatar data para ser mais legível
-    const dataDisplay = item.data_disponibilizacao 
-        ? new Date(item.data_disponibilizacao.split('/').reverse().join('-')).toLocaleDateString('pt-BR', { day: '2-digit', month: 'long', year: 'numeric' })
-        : item.data_disponibilizacao;
+// Componente de resumo do processo no drawer
+function DrawerResumo({ items }: { items: any[] }) {
+    // Coletar informações únicas de todas as publicações
+    const tribunais = [...new Set(items.map(i => i.tribunal).filter(Boolean))];
+    const orgaos = [...new Set(items.map(i => i.orgao).filter(Boolean))];
+    const tiposComunicacao = [...new Set(items.map(i => i.tipo_comunicacao).filter(Boolean))];
+
+    // Coletar todas as partes de todos os items
+    const todosAtivos = [...new Set(items.flatMap(i => i.polos?.ativo || []))];
+    const todosPassivos = [...new Set(items.flatMap(i => i.polos?.passivo || []))];
+
+    // Datas (primeira e última)
+    const datas = items
+        .map(i => i.data_disponibilizacao)
+        .filter(Boolean)
+        .sort();
 
     return (
-        <div className="relative pl-4 border-l-2 border-primary/30 hover:border-primary transition-colors pb-6 last:pb-0">
-            {/* Timeline dot */}
-            <div className="absolute -left-[9px] top-0 w-4 h-4 rounded-full bg-background border-2 border-primary/50 flex items-center justify-center">
-                <div className="w-1.5 h-1.5 rounded-full bg-primary/50"></div>
+        <div className="drawer-resumo">
+            {/* Cards de info */}
+            <div className="drawer-info-grid">
+                <div className="drawer-info-card">
+                    <div className="drawer-info-card-icon">
+                        <Building size={16} />
+                    </div>
+                    <div>
+                        <span className="drawer-info-label">Tribunal</span>
+                        <span className="drawer-info-value">{tribunais.join(', ') || '-'}</span>
+                    </div>
+                </div>
+                <div className="drawer-info-card">
+                    <div className="drawer-info-card-icon">
+                        <Building size={16} />
+                    </div>
+                    <div>
+                        <span className="drawer-info-label">Órgão</span>
+                        <span className="drawer-info-value">{orgaos[0] || '-'}</span>
+                    </div>
+                </div>
+                <div className="drawer-info-card">
+                    <div className="drawer-info-card-icon">
+                        <Calendar size={16} />
+                    </div>
+                    <div>
+                        <span className="drawer-info-label">Período</span>
+                        <span className="drawer-info-value">
+                            {datas.length > 1 ? `${datas[0]} a ${datas[datas.length - 1]}` : datas[0] || '-'}
+                        </span>
+                    </div>
+                </div>
+                <div className="drawer-info-card">
+                    <div className="drawer-info-card-icon">
+                        <FileText size={16} />
+                    </div>
+                    <div>
+                        <span className="drawer-info-label">Tipo</span>
+                        <span className="drawer-info-value">{tiposComunicacao[0] || '-'}</span>
+                    </div>
+                </div>
             </div>
 
-            <div className="flex flex-col gap-2">
-                <div className="flex items-start justify-between">
-                    <div>
-                        <span className="inline-block px-2 py-0.5 rounded-full bg-primary/10 text-primary text-xs font-medium mb-1 border border-primary/20">
-                            {item.tribunal}
-                        </span>
-                        <div className="text-sm font-semibold text-text-primary">
-                            {item.orgao}
-                        </div>
-                        {item.tipo_comunicacao && (
-                            <div className="text-xs text-muted mt-0.5">
-                                {item.tipo_comunicacao}
+            {/* Partes */}
+            {(todosAtivos.length > 0 || todosPassivos.length > 0) && (
+                <div className="drawer-partes">
+                    <div className="drawer-partes-header">
+                        <Users size={16} />
+                        <span>Partes do Processo</span>
+                    </div>
+                    <div className="drawer-partes-grid">
+                        {todosAtivos.length > 0 && (
+                            <div className="drawer-polo">
+                                <span className="drawer-polo-label polo-ativo">Polo Ativo</span>
+                                {todosAtivos.map((nome, i) => (
+                                    <span key={i} className="drawer-parte-nome">{nome}</span>
+                                ))}
+                            </div>
+                        )}
+                        {todosPassivos.length > 0 && (
+                            <div className="drawer-polo">
+                                <span className="drawer-polo-label polo-passivo">Polo Passivo</span>
+                                {todosPassivos.map((nome, i) => (
+                                    <span key={i} className="drawer-parte-nome">{nome}</span>
+                                ))}
                             </div>
                         )}
                     </div>
-                    <div className="text-xs font-mono text-muted whitespace-nowrap bg-surface px-2 py-1 rounded border border-border">
-                        {item.data_disponibilizacao}
-                    </div>
                 </div>
+            )}
+        </div>
+    );
+}
 
-                {/* Polos / Partes Compactas */}
-                {(item.polos?.ativo?.length > 0 || item.polos?.passivo?.length > 0) && (
-                     <div className="flex flex-wrap gap-2 text-xs mt-1 items-center opacity-80">
-                        {item.polos.ativo?.map((p: string, i: number) => (
-                            <span key={`A${i}`} className="text-emerald-500 font-medium truncate max-w-[150px]" title={p}>{p}</span>
-                        ))}
-                        {item.polos.ativo?.length && item.polos.passivo?.length && <span className="text-muted">vs</span>}
-                        {item.polos.passivo?.map((p: string, i: number) => (
-                            <span key={`P${i}`} className="text-red-500 font-medium truncate max-w-[150px]" title={p}>{p}</span>
-                        ))}
-                     </div>
-                )}
+// Componente de cada publicação no drawer
+function DrawerPublicacaoItem({ item, index }: { item: any; index: number; key?: string | number }) {
+    const [expandido, setExpandido] = useState(false);
+    const texto = item.texto || "";
 
-                {/* Conteúdo Expansível */}
-                <div className="mt-2">
-                    <button 
-                        onClick={() => setExpandido(!expandido)}
-                        className="flex items-center gap-2 text-xs font-medium text-primary hover:text-primary-hover transition-colors"
-                    >
-                        {expandido ? <EyeOff size={14} /> : <Eye size={14} />}
-                        {expandido ? "Ocultar conteúdo" : "Ler conteúdo"}
-                    </button>
-
-                    {expandido && (
-                        <div className="mt-3 bg-surface p-3 rounded-md border border-border animate-fadeIn">
-                             <p className="text-sm text-text-secondary leading-relaxed font-mono whitespace-pre-wrap max-h-[400px] overflow-y-auto custom-scrollbar">
-                                {texto}
-                             </p>
-                             {item.link && (
-                                <a href={item.link} target="_blank" rel="noreferrer" className="mt-2 inline-flex items-center gap-1 text-xs text-muted hover:text-primary">
-                                    <FileText size={12} /> Link Original
-                                </a>
-                             )}
-                        </div>
+    return (
+        <div className="drawer-pub-item" style={{ animationDelay: `${index * 0.05}s` }}>
+            <div className="drawer-pub-header">
+                <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
+                    <span className="processo-tribunal">{item.tribunal}</span>
+                    <span className="drawer-pub-orgao">{item.orgao}</span>
+                    {item.tipo_comunicacao && (
+                        <span className="drawer-pub-tipo">{item.tipo_comunicacao}</span>
                     )}
                 </div>
+                <span className="drawer-pub-data">
+                    <Calendar size={13} />
+                    {item.data_disponibilizacao}
+                </span>
+            </div>
+
+            {/* Partes inline */}
+            {(item.polos?.ativo?.length > 0 || item.polos?.passivo?.length > 0) && (
+                <div className="drawer-pub-partes">
+                    {item.polos.ativo?.map((p: string, i: number) => (
+                        <span key={`A${i}`} className="parte-tag" style={{ background: 'rgba(16, 185, 129, 0.1)', color: '#059669', border: '1px solid rgba(16, 185, 129, 0.2)', fontSize: '0.7rem' }}>{p}</span>
+                    ))}
+                    {item.polos.ativo?.length > 0 && item.polos.passivo?.length > 0 && (
+                        <span style={{ color: 'var(--text-muted)', fontSize: '0.7rem', fontWeight: 600 }}>vs</span>
+                    )}
+                    {item.polos.passivo?.map((p: string, i: number) => (
+                        <span key={`P${i}`} className="parte-tag" style={{ background: 'rgba(239, 68, 68, 0.1)', color: '#dc2626', border: '1px solid rgba(239, 68, 68, 0.2)', fontSize: '0.7rem' }}>{p}</span>
+                    ))}
+                </div>
+            )}
+
+            {/* Botão expandir + conteúdo */}
+            <div className="drawer-pub-content-area">
+                <button
+                    onClick={() => setExpandido(!expandido)}
+                    className="drawer-pub-toggle"
+                >
+                    {expandido ? <EyeOff size={15} /> : <Eye size={15} />}
+                    {expandido ? 'Ocultar conteúdo' : 'Ler conteúdo da publicação'}
+                </button>
+
+                {expandido && (
+                    <div className="drawer-pub-texto animate-fadeIn">
+                        <p style={{ whiteSpace: 'pre-wrap', fontSize: '0.85rem', lineHeight: '1.7', color: 'var(--text-secondary)', fontFamily: 'Inter, sans-serif' }}>
+                            {texto}
+                        </p>
+                        {item.link && (
+                            <a href={item.link} target="_blank" rel="noreferrer" className="drawer-pub-link">
+                                <ExternalLink size={12} />
+                                Ver documento original
+                            </a>
+                        )}
+                    </div>
+                )}
             </div>
         </div>
-    )
+    );
 }
 
 // Componente legado para lista principal
-function ResultadoItem({ item, onBuscaProcesso }: { item: any, onBuscaProcesso: (proc: string) => void }) {
+function ResultadoItem({ item, onBuscaProcesso }: { item: any; key?: string | number; onBuscaProcesso: (proc: string) => void }) {
     const [expandido, setExpandido] = useState(false);
     const texto = item.texto || "";
     const numProcesso = item.processo || item.numeroProcesso || item.numero_processo;

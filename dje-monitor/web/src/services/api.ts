@@ -109,6 +109,71 @@ export interface DashboardResumo {
     ultimaSync: string | null;
 }
 
+// ===== Monitoramento de Pessoas =====
+
+export interface PessoaMonitorada {
+    id: number;
+    nome: string;
+    cpf?: string;
+    tribunal_filtro?: string;
+    ativo: boolean;
+    intervalo_horas: number;
+    ultimo_check?: string;
+    proximo_check?: string;
+    total_publicacoes: number;
+    total_alertas_nao_lidos: number;
+    // Dados de origem (planilha)
+    numero_processo?: string;
+    comarca?: string;
+    uf?: string;
+    data_prazo?: string;
+    data_expiracao?: string;
+    origem_importacao?: string;
+    criado_em: string;
+    atualizado_em: string;
+}
+
+export interface ImportacaoStats {
+    total: number;
+    importados: number;
+    pulados: number;
+    erros: number;
+    expirados_desativados?: number;
+    dry_run?: boolean;
+}
+
+export interface PessoaMonitoradaCreate {
+    nome: string;
+    cpf?: string;
+    tribunal_filtro?: string;
+    intervalo_horas?: number;
+}
+
+export interface PublicacaoResumo {
+    id: number;
+    tribunal: string;
+    numero_processo: string;
+    data_disponibilizacao: string;
+    orgao: string;
+    tipo_comunicacao: string;
+    texto_resumo: string;
+    link?: string;
+    criado_em: string;
+}
+
+export interface AlertaItem {
+    id: number;
+    pessoa_id: number;
+    pessoa_nome: string;
+    tipo: string;
+    titulo: string;
+    descricao: string;
+    lido: boolean;
+    criado_em: string;
+    lido_em?: string;
+    publicacao?: PublicacaoResumo;
+}
+
 // API functions
 export const processoApi = {
     buscar: async (params: { numero?: string; cpf?: string; nome?: string; tribunal?: string }) => {
@@ -184,6 +249,77 @@ export const syncApi = {
 
     getStatus: async () => {
         const response = await api.get('/sync/status');
+        return response.data;
+    },
+};
+
+export const pessoaMonitoradaApi = {
+    criar: async (data: PessoaMonitoradaCreate): Promise<PessoaMonitorada> => {
+        const response = await api.post('/v1/pessoas-monitoradas', data);
+        return response.data;
+    },
+
+    listar: async (ativo?: boolean): Promise<{ count: number; items: PessoaMonitorada[] }> => {
+        const response = await api.get('/v1/pessoas-monitoradas', { params: { ativo } });
+        return response.data;
+    },
+
+    obter: async (id: number): Promise<PessoaMonitorada> => {
+        const response = await api.get(`/v1/pessoas-monitoradas/${id}`);
+        return response.data;
+    },
+
+    atualizar: async (id: number, data: Partial<PessoaMonitoradaCreate> & { ativo?: boolean }): Promise<PessoaMonitorada> => {
+        const response = await api.put(`/v1/pessoas-monitoradas/${id}`, data);
+        return response.data;
+    },
+
+    remover: async (id: number): Promise<void> => {
+        await api.delete(`/v1/pessoas-monitoradas/${id}`);
+    },
+
+    publicacoes: async (id: number): Promise<PublicacaoResumo[]> => {
+        const response = await api.get(`/v1/pessoas-monitoradas/${id}/publicacoes`);
+        return response.data;
+    },
+
+    alertas: async (id: number, lido?: boolean): Promise<AlertaItem[]> => {
+        const response = await api.get(`/v1/pessoas-monitoradas/${id}/alertas`, { params: { lido } });
+        return response.data;
+    },
+};
+
+export const alertaApi = {
+    listar: async (params?: { pessoa_id?: number; lido?: boolean; limit?: number }): Promise<AlertaItem[]> => {
+        const response = await api.get('/v1/alertas', { params });
+        return response.data;
+    },
+
+    contarNaoLidos: async (pessoa_id?: number): Promise<number> => {
+        const response = await api.get('/v1/alertas/nao-lidos/count', { params: { pessoa_id } });
+        return response.data.count;
+    },
+
+    marcarLidos: async (ids?: number[], todos?: boolean): Promise<{ marcados: number }> => {
+        const response = await api.post('/v1/alertas/marcar-lidos', { ids, todos: todos ?? false });
+        return response.data;
+    },
+};
+
+export const importacaoApi = {
+    importarPlanilha: async (
+        arquivo: File,
+        options?: { dryRun?: boolean; desativarExpirados?: boolean }
+    ): Promise<ImportacaoStats> => {
+        const formData = new FormData();
+        formData.append('arquivo', arquivo);
+        const params: Record<string, string> = {};
+        if (options?.dryRun) params['dry_run'] = 'true';
+        if (options?.desativarExpirados) params['desativar_expirados'] = 'true';
+        const response = await api.post('/v1/importar-planilha', formData, {
+            headers: { 'Content-Type': 'multipart/form-data' },
+            params,
+        });
         return response.data;
     },
 };

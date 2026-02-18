@@ -15,6 +15,7 @@ from urllib.parse import urljoin
 from bs4 import BeautifulSoup
 
 from .base import BaseCollector, DiarioItem
+from utils.data_normalizer import normalizar_nome
 
 logger = logging.getLogger(__name__)
 
@@ -187,22 +188,25 @@ class DJENCollector(BaseCollector):
     def _parse_comunicacoes_json(self, items: list, termo: str, pular_filtro_destinatario: bool = False) -> list[dict]:
         """Parseia comunicações retornadas pela API JSON."""
         resultados = []
-        termo_norm = termo.strip().upper()
+        # Normaliza o termo removendo acentos para comparação robusta
+        termo_norm = normalizar_nome(termo)
 
         for item in items:
             try:
                 # Verificar dados de destinatários
                 destinatarios = item.get("destinatarios", [])
-                nomes_destinatarios = [d.get("nome", "").strip().upper() for d in destinatarios]
-                
+
                 # Se NÃO for busca por processo, filtrar pelo nome do destinatário
+                # Usa normalizar_nome em ambos os lados para ignorar diferenças de acento
+                # Ex: "JOAO" (planilha) casa com "JOÃO" (API)
                 if not pular_filtro_destinatario:
                     encontrou_exato = False
-                    for nome_dest in nomes_destinatarios:
-                        if nome_dest == termo_norm:
+                    for dest in destinatarios:
+                        nome_dest = dest.get("nome", "")
+                        if normalizar_nome(nome_dest) == termo_norm:
                             encontrou_exato = True
                             break
-                    
+
                     if not encontrou_exato:
                         continue
 
@@ -274,7 +278,7 @@ class DJENCollector(BaseCollector):
                     "termo_buscado": termo,
                     "fonte": "DJEN API",
                     # Dados extras para contexto
-                    "partes": nomes_destinatarios, # Legado (filtrado pela busca)
+                    "partes": [d.get("nome", "") for d in destinatarios], # Legado (filtrado pela busca)
                     "polos": polos, # Estrutura completa
                     "raw_data": item 
                 }
