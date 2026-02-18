@@ -1,5 +1,5 @@
-import { Routes, Route, NavLink, useLocation } from 'react-router-dom'
-import { LayoutDashboard, Search, Eye, Bell, Settings, Radar } from 'lucide-react'
+import { Routes, Route, NavLink } from 'react-router-dom'
+import { LayoutDashboard, Search, Eye, Bell, Radar } from 'lucide-react'
 import Dashboard from './pages/Dashboard'
 import Busca from './pages/Busca'
 import Monitorados from './pages/Monitorados'
@@ -7,7 +7,6 @@ import ProcessoDetalhe from './pages/ProcessoDetalhe'
 import './App.css'
 
 function App() {
-  const location = useLocation()
 
   const navItems = [
     { path: '/', icon: LayoutDashboard, label: 'Dashboard' },
