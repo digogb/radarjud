@@ -78,7 +78,7 @@ services:
     build:
       context: ./web
       args:
-        - VITE_API_URL=https://radarjud.rglabs.tech
+        - VITE_API_URL=
     container_name: dje-monitor-web
     ports:
       - "80:80"
