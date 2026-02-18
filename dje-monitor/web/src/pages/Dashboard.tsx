@@ -2,7 +2,7 @@ import { useState, useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { FileText, Eye, Bell, Clock, TrendingUp, RefreshCw, AlertCircle } from 'lucide-react'
 import { dashboardApi, syncApi, DashboardResumo, AlteracaoDetectada } from '../services/api'
-import { format, formatDistanceToNow } from 'date-fns'
+import { formatDistanceToNow } from 'date-fns'
 import { ptBR } from 'date-fns/locale'
 
 export default function Dashboard() {
@@ -169,8 +169,8 @@ export default function Dashboard() {
                       : alteracao.tipo === 'NOVA_PUBLICACAO' ? 'Nova Publicação' : alteracao.tipo}
                   </div>
                   <div className="alert-description">
-                    {alteracao.dadosNovos?.tribunal && `${alteracao.dadosNovos.tribunal} · `}
-                    {alteracao.dadosNovos?.tipo_comunicacao || alteracao.processo?.numeroUnificado || alteracao.processoId}
+                    {!!alteracao.dadosNovos?.tribunal && `${alteracao.dadosNovos.tribunal as string} · `}
+                    {(alteracao.dadosNovos?.tipo_comunicacao as string) || alteracao.processo?.numeroUnificado || alteracao.processoId}
                   </div>
                   <div className="alert-time">
                     {formatDistanceToNow(new Date(alteracao.detectadoEm), {

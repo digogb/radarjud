@@ -1,15 +1,15 @@
 import { useState, useEffect, useRef } from 'react'
 import { createPortal } from 'react-dom'
 import { useNavigate, useLocation } from 'react-router-dom'
-import { Search, FileText, Eye, EyeOff, AlertCircle, X, Calendar, Building, Users, Scale, ChevronDown, ChevronUp, ExternalLink, Bell, Check } from 'lucide-react'
+import { Search, FileText, Eye, EyeOff, AlertCircle, X, Calendar, Building, Users, Scale, ExternalLink, Bell, Check } from 'lucide-react'
 import { processoApi, pessoaMonitoradaApi } from '../services/api'
 
 export default function Busca() {
   const navigate = useNavigate()
   const location = useLocation()
   const [tiposBusca, setTipoBusca] = useState<'numero' | 'cpf' | 'nome'>('nome')
-  const [numero, setNumero] = useState('')
-  const [cpf, setCpf] = useState('')
+  const [numero] = useState('')
+  const [cpf] = useState('')
   const [nome, setNome] = useState('')
   // Estado para tribunal, padrão 'Todos'
   const [tribunal, setTribunal] = useState('Todos')
