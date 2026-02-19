@@ -127,7 +127,7 @@ class PessoaMonitoradaCreate(BaseModel):
     nome: str
     cpf: Optional[str] = None
     tribunal_filtro: Optional[str] = None
-    intervalo_horas: int = 24
+    intervalo_horas: int = 12
 
 
 class PessoaMonitoradaUpdate(BaseModel):
