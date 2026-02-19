@@ -1,6 +1,9 @@
 import axios from 'axios';
 
-const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:3000';
+// Se VITE_API_URL estiver definido (mesmo vazio), usa ele. Caso contrário usa localhost:8000 (dev)
+// Em produção (Docker), VITE_API_URL deve ser vazio para usar caminho relativo /api
+const envUrl = import.meta.env.VITE_API_URL;
+const API_URL = envUrl !== undefined ? envUrl : 'http://localhost:8000';
 
 const api = axios.create({
     baseURL: `${API_URL}/api`,

@@ -131,7 +131,7 @@ class PessoaMonitoradaCreate(BaseModel):
     nome: str
     cpf: Optional[str] = None
     tribunal_filtro: Optional[str] = None
-    intervalo_horas: int = 24
+    intervalo_horas: int = 12
 
 
 class PessoaMonitoradaUpdate(BaseModel):
@@ -328,24 +328,44 @@ async def importar_planilha_endpoint(
     """Faz upload de pessoas.xlsx e importa partes adversas como pessoas monitoradas.
     Retorna os stats da importação ao concluir (síncrono).
     """
+    logger.info(f"Iniciando upload de planilha: {arquivo.filename}")
+    
     import tempfile
     import shutil
+    import traceback
     from services.import_pessoas import importar_planilha
 
     if not arquivo.filename or not arquivo.filename.endswith(".xlsx"):
+        logger.warning(f"Tentativa de upload de arquivo inválido: {arquivo.filename}")
         raise HTTPException(status_code=400, detail="Arquivo deve ser .xlsx")
 
-    with tempfile.NamedTemporaryFile(delete=False, suffix=".xlsx") as tmp:
-        shutil.copyfileobj(arquivo.file, tmp)
-        tmp_path = tmp.name
-
     try:
+        # Salva o arquivo temporariamente
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".xlsx") as tmp:
+            shutil.copyfileobj(arquivo.file, tmp)
+            tmp_path = tmp.name
+
+        logger.info(f"Arquivo salvo temporariamente em: {tmp_path}")
+
+        # Executa a importação
+        logger.info(f"Chamando importar_planilha(dry_run={dry_run})...")
         stats = importar_planilha(tmp_path, repo, dry_run=dry_run, intervalo_horas=intervalo_horas)
+        logger.info(f"Importação concluída. Stats: {stats}")
         if desativar_expirados and not dry_run:
+            logger.info("Desativando monitoramentos expirados...")
             stats["expirados_desativados"] = repo.desativar_expirados()
+            logger.info(f"Expirados desativados: {stats.get('expirados_desativados')}")
+
         return {"dry_run": dry_run, **stats}
+
+    except Exception as e:
+        logger.error(f"Erro fatal na importação de planilha: {e}")
+        logger.error(traceback.format_exc())
+        raise HTTPException(status_code=500, detail=f"Erro interno ao processar planilha: {str(e)}")
+        
     finally:
         try:
-            os.unlink(tmp_path)
+            if 'tmp_path' in locals():
+                os.unlink(tmp_path)
         except Exception:
             pass

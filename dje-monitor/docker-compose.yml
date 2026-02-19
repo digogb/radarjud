@@ -58,7 +58,7 @@ services:
     build: .
     container_name: dje-monitor-worker
     entrypoint: []
-    command: python -m dramatiq tasks --processes 1 --threads 8
+    command: python -m dramatiq tasks --processes 1 --threads 2
     volumes:
       - ./data:/app/data
       - ./src:/app/src
@@ -78,7 +78,7 @@ services:
     build:
       context: ./web
       args:
-        - VITE_API_URL=https://radarjud.rglabs.tech
+        - VITE_API_URL=
     container_name: dje-monitor-web
     ports:
       - "80:80"
