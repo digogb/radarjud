@@ -84,6 +84,7 @@ def importar_planilha(
     filepath: str,
     repo: DiarioRepository,
     dry_run: bool = False,
+    intervalo_horas: int = 24,
 ) -> dict:
     """Lê a planilha e cadastra partes adversas como pessoas monitoradas.
 
@@ -155,6 +156,7 @@ def importar_planilha(
                 data_prazo=dt_prazo,
                 data_expiracao=dt_expiracao,
                 origem_importacao="PLANILHA",
+                intervalo_horas=intervalo_horas,
             )
             logger.info(f"Linha {row_idx}: importado — {nome}")
             stats["importados"] += 1

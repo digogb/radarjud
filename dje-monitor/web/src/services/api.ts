@@ -309,13 +309,14 @@ export const alertaApi = {
 export const importacaoApi = {
     importarPlanilha: async (
         arquivo: File,
-        options?: { dryRun?: boolean; desativarExpirados?: boolean }
+        options?: { dryRun?: boolean; desativarExpirados?: boolean; intervaloHoras?: number }
     ): Promise<ImportacaoStats> => {
         const formData = new FormData();
         formData.append('arquivo', arquivo);
         const params: Record<string, string> = {};
         if (options?.dryRun) params['dry_run'] = 'true';
         if (options?.desativarExpirados) params['desativar_expirados'] = 'true';
+        if (options?.intervaloHoras) params['intervalo_horas'] = String(options.intervaloHoras);
         const response = await api.post('/v1/importar-planilha', formData, {
             headers: { 'Content-Type': 'multipart/form-data' },
             params,

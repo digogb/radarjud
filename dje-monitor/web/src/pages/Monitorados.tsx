@@ -24,6 +24,7 @@ export default function Monitorados() {
   const [mostrarImport, setMostrarImport] = useState(false)
   const [arquivoImport, setArquivoImport] = useState<File | null>(null)
   const [dryRun, setDryRun] = useState(false)
+  const [intervaloImport, setIntervaloImport] = useState(24)
   const [importando, setImportando] = useState(false)
   const [resultadoImport, setResultadoImport] = useState<ImportacaoStats | null>(null)
   const [erroImport, setErroImport] = useState('')
@@ -47,7 +48,6 @@ export default function Monitorados() {
     '', 'TJAC', 'TJAL', 'TJAM', 'TJAP', 'TJBA', 'TJCE', 'TJDFT', 'TJES', 'TJGO', 'TJMA',
     'TJMG', 'TJMS', 'TJMT', 'TJPA', 'TJPB', 'TJPE', 'TJPI', 'TJPR', 'TJRJ', 'TJRN',
     'TJRO', 'TJRR', 'TJRS', 'TJSC', 'TJSE', 'TJSP', 'TJTO',
-    'TRF1', 'TRF2', 'TRF3', 'TRF4', 'TRF5',
   ]
 
   useEffect(() => {
@@ -143,6 +143,7 @@ export default function Monitorados() {
       const stats = await importacaoApi.importarPlanilha(arquivoImport, {
         dryRun,
         desativarExpirados: !dryRun,
+        intervaloHoras: intervaloImport,
       })
       if (dryRun) {
         // Dry-run: mostra resultado no painel
@@ -351,17 +352,35 @@ export default function Monitorados() {
           </div>
 
           {/* Opções */}
-          <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '16px' }}>
-            <input
-              type="checkbox"
-              id="dryRun"
-              checked={dryRun}
-              onChange={e => setDryRun(e.target.checked)}
-              style={{ width: '16px', height: '16px', cursor: 'pointer' }}
-            />
-            <label htmlFor="dryRun" style={{ fontSize: '0.875rem', color: 'var(--text-secondary)', cursor: 'pointer' }}>
-              Simulação (dry-run) — valida sem gravar no banco
-            </label>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '24px', marginBottom: '16px', flexWrap: 'wrap' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+              <input
+                type="checkbox"
+                id="dryRun"
+                checked={dryRun}
+                onChange={e => setDryRun(e.target.checked)}
+                style={{ width: '16px', height: '16px', cursor: 'pointer' }}
+              />
+              <label htmlFor="dryRun" style={{ fontSize: '0.875rem', color: 'var(--text-secondary)', cursor: 'pointer' }}>
+                Simulação (dry-run) — valida sem gravar no banco
+              </label>
+            </div>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+              <label style={{ fontSize: '0.875rem', color: 'var(--text-secondary)', whiteSpace: 'nowrap' }}>
+                Verificar a cada
+              </label>
+              <select
+                className="input-field"
+                value={intervaloImport}
+                onChange={e => setIntervaloImport(Number(e.target.value))}
+                style={{ width: 'auto', padding: '4px 8px' }}
+              >
+                <option value={6}>6 horas</option>
+                <option value={12}>12 horas</option>
+                <option value={24}>24 horas</option>
+                <option value={48}>48 horas</option>
+              </select>
+            </div>
           </div>
 
           {/* Resultado */}

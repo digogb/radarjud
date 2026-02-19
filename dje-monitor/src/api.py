@@ -108,6 +108,10 @@ async def search_name(
     try:
         hoje = date.today()
         resultados = collector.buscar_por_nome(nome, hoje, hoje)
+        resultados = [
+            r for r in resultados
+            if not (r.get("siglaTribunal") or r.get("tribunal", "")).upper().startswith("TRF")
+        ]
         if tribunal:
             resultados = [
                 r for r in resultados
@@ -319,6 +323,7 @@ async def importar_planilha_endpoint(
     arquivo: UploadFile = File(...),
     dry_run: bool = Query(False, description="Simula sem gravar no banco"),
     desativar_expirados: bool = Query(False, description="Desativa monitoramentos expirados após importar"),
+    intervalo_horas: int = Query(24, description="Frequência de verificação em horas (6, 12, 24 ou 48)"),
 ):
     """Faz upload de pessoas.xlsx e importa partes adversas como pessoas monitoradas.
     Retorna os stats da importação ao concluir (síncrono).
@@ -335,7 +340,7 @@ async def importar_planilha_endpoint(
         tmp_path = tmp.name
 
     try:
-        stats = importar_planilha(tmp_path, repo, dry_run=dry_run)
+        stats = importar_planilha(tmp_path, repo, dry_run=dry_run, intervalo_horas=intervalo_horas)
         if desativar_expirados and not dry_run:
             stats["expirados_desativados"] = repo.desativar_expirados()
         return {"dry_run": dry_run, **stats}

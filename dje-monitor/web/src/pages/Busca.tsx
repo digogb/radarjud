@@ -27,7 +27,6 @@ export default function Busca() {
     'TJAC', 'TJAL', 'TJAM', 'TJAP', 'TJBA', 'TJCE', 'TJDFT', 'TJES', 'TJGO', 'TJMA',
     'TJMG', 'TJMS', 'TJMT', 'TJPA', 'TJPB', 'TJPE', 'TJPI', 'TJPR', 'TJRJ', 'TJRN',
     'TJRO', 'TJRR', 'TJRS', 'TJSC', 'TJSE', 'TJSP', 'TJTO',
-    'TRF1', 'TRF2', 'TRF3', 'TRF4', 'TRF5',
   ]
 
   // Estados para o Drawer de Histórico
