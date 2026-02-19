@@ -1,5 +1,6 @@
 """Fixtures compartilhadas para testes."""
 
+import os
 import sys
 from pathlib import Path
 
@@ -76,6 +77,12 @@ def texto_sem_cpf():
 
 
 @pytest.fixture
-def db_url(tmp_path):
-    """URL de banco de dados SQLite temporário para testes."""
-    return f"sqlite:///{tmp_path / 'test.sqlite'}"
+def db_url():
+    """URL de banco de dados PostgreSQL para testes.
+    Requer DJE_TEST_DATABASE_URL no ambiente, ex:
+    postgresql://user:pass@localhost:5432/djedb_test
+    """
+    url = os.getenv("DJE_TEST_DATABASE_URL")
+    if not url:
+        pytest.skip("DJE_TEST_DATABASE_URL não configurado — pulando testes de banco")
+    return url

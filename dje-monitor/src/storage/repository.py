@@ -22,9 +22,6 @@ class DiarioRepository:
     """Repositório principal do DJE Monitor."""
 
     def __init__(self, database_url: str):
-        connect_args = {}
-        if database_url.startswith("sqlite"):
-            connect_args = {"check_same_thread": False}
         self.engine = create_engine(
             database_url,
             echo=False,
@@ -32,7 +29,6 @@ class DiarioRepository:
             max_overflow=20,
             pool_pre_ping=True,
             pool_recycle=3600,
-            connect_args=connect_args,
         )
         Base.metadata.create_all(self.engine)
         self.SessionLocal = sessionmaker(bind=self.engine)
