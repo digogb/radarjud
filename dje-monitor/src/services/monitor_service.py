@@ -155,6 +155,12 @@ class MonitorService:
             logger.error(f"Erro na busca DJEN para '{nome}': {e}")
             return []
 
+        # Nunca armazenar publicações de TRF (federal)
+        resultados = [
+            r for r in resultados
+            if not (r.get("siglaTribunal") or r.get("tribunal", "")).upper().startswith("TRF")
+        ]
+
         if tribunal_filtro:
             resultados = [
                 r for r in resultados
