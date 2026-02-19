@@ -25,9 +25,8 @@ class Config:
     base_dir: Path = Path(os.getenv("DJE_BASE_DIR", Path(__file__).parent.parent))
     data_dir: Path = field(init=False)
     pdf_dir: Path = field(init=False)
-    db_path: Path = field(init=False)
 
-    # Database
+    # Database (obrigatório — PostgreSQL)
     database_url: str = os.getenv("DJE_DATABASE_URL", "")
 
     # Scheduler
@@ -75,8 +74,11 @@ class Config:
         self.pdf_dir.mkdir(parents=True, exist_ok=True)
 
         if not self.database_url:
-            self.db_path = self.data_dir / "db.sqlite"
-            self.database_url = f"sqlite:///{self.db_path}"
+            raise ValueError(
+                "DJE_DATABASE_URL não configurado. "
+                "Defina a variável de ambiente com a URL do PostgreSQL, ex: "
+                "postgresql://user:pass@localhost:5432/djedb"
+            )
 
         # Carregar CPFs de env var se não fornecidos
         if not self.cpfs_monitorados:

@@ -8,11 +8,13 @@ from storage.repository import DiarioRepository
 
 
 class TestDiarioRepository:
-    """Testes para o repositório de dados."""
+    """Testes para o repositório de dados.
+    Requer DJE_TEST_DATABASE_URL configurado no ambiente.
+    """
 
-    def setup_method(self, method):
-        # Cada teste usa DB in-memory para isolamento
-        self.repo = DiarioRepository("sqlite:///:memory:")
+    @pytest.fixture(autouse=True)
+    def setup_repo(self, db_url):
+        self.repo = DiarioRepository(db_url)
 
     # --- CPFs Monitorados ---
 
