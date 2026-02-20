@@ -75,6 +75,13 @@ def _init_scheduler():
 @app.on_event("startup")
 def startup_event():
     _init_scheduler()
+    # Garantir collections do Qdrant
+    try:
+        from services.embedding_service import ensure_collections
+        ensure_collections()
+        logger.info("Qdrant collections verificadas.")
+    except Exception as e:
+        logger.warning(f"Qdrant indisponível no startup: {e}")
 
 
 @app.on_event("shutdown")
@@ -304,7 +311,7 @@ def sync_status():
     try:
         import redis as redis_client
         r = redis_client.from_url(config.redis_url)
-        for fila in ["verificacao", "scheduler", "manutencao"]:
+        for fila in ["verificacao", "scheduler", "manutencao", "indexacao"]:
             count = r.llen(f"dramatiq:{fila}")
             filas[fila] = int(count)
     except Exception as e:
@@ -369,3 +376,77 @@ async def importar_planilha_endpoint(
                 os.unlink(tmp_path)
         except Exception:
             pass
+
+
+# ============================================================
+# Busca Semântica (Qdrant)
+# ============================================================
+
+
+@app.get("/api/v1/search/semantic")
+def semantic_search(
+    q: str = Query(..., min_length=3, description="Texto da busca semântica"),
+    tribunal: Optional[str] = Query(None, description="Filtro por tribunal (ex: TJCE)"),
+    pessoa_id: Optional[int] = Query(None, description="Filtro por pessoa monitorada"),
+    limit: int = Query(20, ge=1, le=100),
+    score_threshold: float = Query(0.35, ge=0.0, le=1.0),
+    tipo: str = Query("publicacoes", regex="^(publicacoes|processos)$"),
+):
+    """
+    Busca semântica em publicações ou processos.
+
+    - **q**: Texto da busca (ex: "execução fiscal dívida tributária")
+    - **tribunal**: Filtro por tribunal (ex: TJCE)
+    - **pessoa_id**: Filtro por pessoa monitorada
+    - **limit**: Máximo de resultados (1-100)
+    - **score_threshold**: Score mínimo de similaridade (0.0-1.0)
+    - **tipo**: "publicacoes" ou "processos"
+    """
+    from services.embedding_service import search_publicacoes, search_processos
+    try:
+        if tipo == "processos":
+            results = search_processos(
+                query=q, tribunal=tribunal,
+                limit=limit, score_threshold=score_threshold,
+            )
+        else:
+            results = search_publicacoes(
+                query=q, tribunal=tribunal, pessoa_id=pessoa_id,
+                limit=limit, score_threshold=score_threshold,
+            )
+        return {
+            "query": q,
+            "tipo": tipo,
+            "total": len(results),
+            "results": results,
+        }
+    except Exception as e:
+        logger.error(f"Erro na busca semântica: {e}", exc_info=True)
+        raise HTTPException(status_code=503, detail=f"Serviço de busca semântica indisponível: {str(e)}")
+
+
+@app.post("/api/v1/search/reindex")
+def trigger_reindex():
+    """Dispara reindexação completa das publicações no Qdrant."""
+    from tasks import reindexar_tudo_task
+    reindexar_tudo_task.send()
+    return {"status": "reindex enfileirado"}
+
+
+@app.get("/api/v1/search/semantic/status")
+def semantic_status():
+    """Retorna status do Qdrant e contadores das collections."""
+    try:
+        from services.embedding_service import get_client
+        client = get_client()
+        collections = {}
+        for c in client.get_collections().collections:
+            info = client.get_collection(c.name)
+            collections[c.name] = {
+                "points": info.points_count,
+                "vectors": info.vectors_count,
+                "status": info.status.value,
+            }
+        return {"status": "ok", "collections": collections}
+    except Exception as e:
+        return {"status": "error", "message": str(e)}

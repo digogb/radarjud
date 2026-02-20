@@ -128,3 +128,62 @@ def desativar_expirados_task() -> None:
     repo = DiarioRepository(config.database_url)
     expirados = repo.desativar_expirados()
     logger.info(f"desativar_expirados_task: {expirados} monitoramento(s) desativado(s)")
+
+
+# ============================================================
+# FILA: indexacao — Vetorização para busca semântica
+# ============================================================
+
+
+@dramatiq.actor(queue_name="indexacao", max_retries=3, min_backoff=5_000)
+def indexar_publicacao_task(pub_id: int, pub_data: dict) -> None:
+    """Vetoriza uma publicação individual e indexa no Qdrant."""
+    from services.embedding_service import index_publicacao, ensure_collections
+    try:
+        ensure_collections()
+        index_publicacao(pub_id, pub_data)
+    except Exception as e:
+        logger.error(f"indexar_publicacao_task: erro ao indexar pub {pub_id}: {e}")
+        raise
+
+
+@dramatiq.actor(queue_name="indexacao", max_retries=3, min_backoff=5_000)
+def indexar_processo_task(processo_id: str, processo_data: dict) -> None:
+    """Vetoriza histórico concatenado de um processo e indexa no Qdrant."""
+    from services.embedding_service import index_processo, ensure_collections
+    try:
+        ensure_collections()
+        index_processo(processo_id, processo_data)
+    except Exception as e:
+        logger.error(f"indexar_processo_task: erro ao indexar processo {processo_id}: {e}")
+        raise
+
+
+@dramatiq.actor(queue_name="indexacao", max_retries=1)
+def reindexar_tudo_task() -> None:
+    """Backfill: reindexar todas as publicações existentes no Qdrant.
+    Processa em batches para não sobrecarregar memória.
+    """
+    from services.embedding_service import ensure_collections, index_publicacao
+
+    ensure_collections()
+    repo = DiarioRepository(config.database_url)
+
+    offset = 0
+    batch_size = 100
+    total = 0
+
+    while True:
+        pubs = repo.get_publicacoes_batch(offset=offset, limit=batch_size)
+        if not pubs:
+            break
+        for pub in pubs:
+            try:
+                index_publicacao(pub.id, pub.to_dict())
+                total += 1
+            except Exception as e:
+                logger.error(f"reindexar_tudo_task: erro ao indexar pub {pub.id}: {e}")
+        offset += batch_size
+        logger.info(f"Reindex: {total} publicações processadas...")
+
+    logger.info(f"Reindex completo: {total} publicações indexadas.")

@@ -66,12 +66,13 @@ class MonitorService:
             hash_pub = gerar_hash_publicacao(item)
             if self.repo.publicacao_existe(hash_pub):
                 continue
-            self.repo.registrar_publicacao(
+            pub = self.repo.registrar_publicacao(
                 pessoa_id=pessoa_id,
                 dados=item,
                 hash_unico=hash_pub,
                 gerar_alerta=False,
             )
+            self._enfileirar_indexacao(pub)
             novos += 1
 
         self.repo.atualizar_ultimo_check(pessoa_id)
@@ -126,6 +127,7 @@ class MonitorService:
                 dados=item,
                 hash_unico=hash_pub,
             )
+            self._enfileirar_indexacao(pub)
 
             titulo = self._montar_titulo(item)
             descricao = self._montar_descricao(item)
@@ -190,6 +192,14 @@ class MonitorService:
         if texto:
             linhas.append(f"\n{texto[:400]}")
         return "\n".join(linhas)
+
+    def _enfileirar_indexacao(self, pub) -> None:
+        """Enfileira vetorização assíncrona da publicação no Qdrant."""
+        try:
+            from tasks import indexar_publicacao_task
+            indexar_publicacao_task.send(pub.id, pub.to_dict())
+        except Exception as e:
+            logger.warning(f"Não foi possível enfileirar indexação da pub {pub.id}: {e}")
 
     def _notificar(self, pessoa: PessoaMonitorada, item: dict, alerta_id: int) -> None:
         """Envia notificações externas (Telegram/Email) para uma nova publicação."""

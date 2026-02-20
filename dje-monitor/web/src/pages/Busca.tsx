@@ -1,8 +1,8 @@
 import { useState, useEffect, useRef } from 'react'
 import { createPortal } from 'react-dom'
 import { useNavigate, useLocation } from 'react-router-dom'
-import { Search, FileText, Eye, EyeOff, AlertCircle, X, Calendar, Building, Users, Scale, ExternalLink, Bell, Check } from 'lucide-react'
-import { processoApi, pessoaMonitoradaApi } from '../services/api'
+import { Search, FileText, Eye, EyeOff, AlertCircle, X, Calendar, Building, Users, Scale, ExternalLink, Bell, Check, Sparkles } from 'lucide-react'
+import { processoApi, pessoaMonitoradaApi, semanticApi, SemanticResult } from '../services/api'
 
 export default function Busca() {
   const navigate = useNavigate()
@@ -21,6 +21,14 @@ export default function Busca() {
   const [monitoradoSucesso, setMonitoradoSucesso] = useState(false)
   const [ultimoTermoBuscado, setUltimoTermoBuscado] = useState('')
   const [hideMonitorar, setHideMonitorar] = useState(false)
+
+  // Busca semântica
+  const [modoBusca, setModoBusca] = useState<'exata' | 'semantica'>('exata')
+  const [tipoSemantico, setTipoSemantico] = useState<'publicacoes' | 'processos'>('publicacoes')
+  const [resultadosSemanticos, setResultadosSemanticos] = useState<SemanticResult[]>([])
+  const [loadingSemantico, setLoadingSemantico] = useState(false)
+  const [buscouSemantico, setBuscouSemantico] = useState(false)
+  const [errorSemantico, setErrorSemantico] = useState('')
 
   const tribunais = [
     'Todos', // Adicionado opção Todos
@@ -87,9 +95,28 @@ export default function Busca() {
       }
   }
 
+  const executarBuscaSemantica = async (query: string, filtroTribunal: string) => {
+    setErrorSemantico('')
+    setLoadingSemantico(true)
+    setBuscouSemantico(true)
+    try {
+      const resp = await semanticApi.search({
+        q: query,
+        tribunal: filtroTribunal === 'Todos' ? undefined : filtroTribunal,
+        tipo: tipoSemantico,
+      })
+      setResultadosSemanticos(resp.results)
+    } catch (err: any) {
+      setErrorSemantico(err.response?.data?.detail || 'Erro na busca semântica')
+      setResultadosSemanticos([])
+    } finally {
+      setLoadingSemantico(false)
+    }
+  }
+
   const handleBuscar = async (e: React.FormEvent) => {
     e.preventDefault()
-    
+
     // Determinar termo
     let termo = ''
     if (tiposBusca === 'numero') termo = numero
@@ -98,7 +125,11 @@ export default function Busca() {
 
     if (!termo) return
 
-    await executarBusca(termo, tribunal)
+    if (modoBusca === 'semantica') {
+      await executarBuscaSemantica(termo, tribunal)
+    } else {
+      await executarBusca(termo, tribunal)
+    }
   }
 
   const handleProcessoClick = (proc: string) => {
@@ -171,19 +202,63 @@ export default function Busca() {
       {/* Search Form */}
       {/* Search Form */}
       <div className="search-section">
-        
-        <div className="search-type-section">
-            <h3 className="search-type-title">Tipo de Busca</h3>
-            <div className="flex gap-3">
-                <button 
-                    type="button"
-                    className={`btn ${tiposBusca === 'nome' ? 'btn-primary' : 'btn-secondary'} btn-sm`}
-                    onClick={() => setTipoBusca('nome')}
-                >
-                    Nome ou Processo
-                </button>
+
+        {/* Toggle Modo de Busca */}
+        <div className="search-type-section" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: '12px' }}>
+            <div>
+              <h3 className="search-type-title">Tipo de Busca</h3>
+              <div className="flex gap-3">
+                  <button
+                      type="button"
+                      className={`btn ${tiposBusca === 'nome' ? 'btn-primary' : 'btn-secondary'} btn-sm`}
+                      onClick={() => setTipoBusca('nome')}
+                  >
+                      Nome ou Processo
+                  </button>
+              </div>
+            </div>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '8px', background: 'var(--surface)', padding: '4px', borderRadius: '8px', border: '1px solid var(--border)' }}>
+              <button
+                type="button"
+                onClick={() => setModoBusca('exata')}
+                className={`btn btn-sm ${modoBusca === 'exata' ? 'btn-primary' : 'btn-ghost'}`}
+                style={{ display: 'flex', alignItems: 'center', gap: '6px' }}
+              >
+                <Search size={14} />
+                Busca Exata
+              </button>
+              <button
+                type="button"
+                onClick={() => setModoBusca('semantica')}
+                className={`btn btn-sm ${modoBusca === 'semantica' ? 'btn-primary' : 'btn-ghost'}`}
+                style={{ display: 'flex', alignItems: 'center', gap: '6px' }}
+              >
+                <Sparkles size={14} />
+                Busca Semântica
+              </button>
             </div>
         </div>
+
+        {/* Opções adicionais no modo semântico */}
+        {modoBusca === 'semantica' && (
+          <div style={{ display: 'flex', gap: '8px', padding: '8px 0', alignItems: 'center' }}>
+            <span style={{ fontSize: '0.85rem', color: 'var(--text-muted)' }}>Buscar em:</span>
+            <button
+              type="button"
+              onClick={() => setTipoSemantico('publicacoes')}
+              className={`btn btn-sm ${tipoSemantico === 'publicacoes' ? 'btn-primary' : 'btn-secondary'}`}
+            >
+              Publicações
+            </button>
+            <button
+              type="button"
+              onClick={() => setTipoSemantico('processos')}
+              className={`btn btn-sm ${tipoSemantico === 'processos' ? 'btn-primary' : 'btn-secondary'}`}
+            >
+              Processos
+            </button>
+          </div>
+        )}
 
         <form onSubmit={handleBuscar} className="search-form-row">
           {tiposBusca === 'nome' && (
@@ -316,6 +391,47 @@ export default function Busca() {
         </div>
       )}
       
+      {/* Resultados Semânticos */}
+      {modoBusca === 'semantica' && buscouSemantico && (
+        <div className="results-section">
+          <div className="results-header">
+            <div className="flex items-center gap-2">
+              <Sparkles size={20} className="text-secondary" />
+              <h2 className="results-title">Resultados Semânticos</h2>
+            </div>
+            <span className="results-count bg-surface border border-border px-3 py-1 rounded-full text-xs font-medium">
+              {resultadosSemanticos.length} resultado(s)
+            </span>
+          </div>
+
+          {errorSemantico && (
+            <div className="card mb-4 flex items-center gap-3" style={{ borderColor: 'var(--danger)' }}>
+              <AlertCircle size={20} color="var(--danger)" />
+              <span className="text-danger">{errorSemantico}</span>
+            </div>
+          )}
+
+          {loadingSemantico ? (
+            <div className="loading">
+              <div className="spinner" />
+              <span className="loading-text">Buscando semanticamente...</span>
+            </div>
+          ) : resultadosSemanticos.length === 0 ? (
+            <div className="empty-state">
+              <div className="empty-icon"><Sparkles size={32} /></div>
+              <h3 className="empty-title">Nenhum resultado semântico</h3>
+              <p className="empty-description">Tente outras palavras ou reduza o threshold de similaridade.</p>
+            </div>
+          ) : (
+            <ul className="processo-list">
+              {resultadosSemanticos.map((item, idx) => (
+                <SemanticResultItem key={item.pub_id ?? item.processo_id ?? idx} item={item} tipo={tipoSemantico} onBuscaProcesso={handleProcessoClick} />
+              ))}
+            </ul>
+          )}
+        </div>
+      )}
+
       {/* Drawer Lateral de Detalhe do Processo */}
       {processoSelecionado && createPortal(
           <>
@@ -537,6 +653,87 @@ function DrawerPublicacaoItem({ item, index }: { item: any; index: number; key?:
                 )}
             </div>
         </div>
+    );
+}
+
+// Componente de card para resultado semântico
+function SemanticResultItem({ item, tipo, onBuscaProcesso }: {
+    item: SemanticResult;
+    tipo: 'publicacoes' | 'processos';
+    onBuscaProcesso: (proc: string) => void;
+}) {
+    const scorePercent = Math.round(item.score * 100);
+    const scoreColor = scorePercent >= 70 ? '#10b981' : scorePercent >= 50 ? '#f59e0b' : '#ef4444';
+
+    return (
+        <li className="processo-item">
+            <div className="processo-header">
+                <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+                    {item.tribunal && <span className="processo-tribunal">{item.tribunal}</span>}
+                    {item.numero_processo && (
+                        <button
+                            onClick={() => item.numero_processo && onBuscaProcesso(item.numero_processo)}
+                            className="processo-numero"
+                            style={{ fontSize: '1rem', background: 'none', border: 'none', padding: 0, cursor: 'pointer', color: 'var(--primary)', fontWeight: 600 }}
+                            onMouseEnter={(e) => e.currentTarget.style.textDecoration = 'underline'}
+                            onMouseLeave={(e) => e.currentTarget.style.textDecoration = 'none'}
+                        >
+                            {item.numero_processo}
+                        </button>
+                    )}
+                </div>
+                {/* Badge de score */}
+                <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                    <div style={{ width: '80px', height: '6px', background: 'var(--border)', borderRadius: '3px', overflow: 'hidden' }}>
+                        <div style={{ width: `${scorePercent}%`, height: '100%', background: scoreColor, borderRadius: '3px', transition: 'width 0.3s' }} />
+                    </div>
+                    <span style={{ fontSize: '0.8rem', fontWeight: 600, color: scoreColor }}>{scorePercent}%</span>
+                </div>
+            </div>
+
+            <div className="processo-info" style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                {tipo === 'processos' && item.total_publicacoes !== undefined && (
+                    <div className="processo-info-item">
+                        <span className="processo-info-label">Publicações</span>
+                        <span className="processo-info-value">{item.total_publicacoes}</span>
+                    </div>
+                )}
+                {item.orgao && (
+                    <div className="processo-info-item">
+                        <span className="processo-info-label">Órgão</span>
+                        <span className="processo-info-value">{item.orgao}{item.tipo_comunicacao ? ` • ${item.tipo_comunicacao}` : ''}</span>
+                    </div>
+                )}
+                {(item.polo_ativo || item.polo_passivo) && (
+                    <div className="processo-partes" style={{ display: 'flex', flexWrap: 'wrap', gap: '6px', marginTop: '4px' }}>
+                        {item.polo_ativo && (
+                            <span className="parte-tag" style={{ fontSize: '0.75rem', background: 'rgba(16, 185, 129, 0.1)', color: '#059669', border: '1px solid rgba(16, 185, 129, 0.2)' }}>
+                                {item.polo_ativo}
+                            </span>
+                        )}
+                        {item.polo_ativo && item.polo_passivo && (
+                            <span style={{ color: 'var(--text-muted)', fontSize: '0.7rem', fontWeight: 600, alignSelf: 'center' }}>vs</span>
+                        )}
+                        {item.polo_passivo && (
+                            <span className="parte-tag" style={{ fontSize: '0.75rem', background: 'rgba(239, 68, 68, 0.1)', color: '#dc2626', border: '1px solid rgba(239, 68, 68, 0.2)' }}>
+                                {item.polo_passivo}
+                            </span>
+                        )}
+                    </div>
+                )}
+                {item.texto_resumo && (
+                    <p style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', lineHeight: '1.5', margin: '4px 0 0 0', fontStyle: 'italic' }}>
+                        "{item.texto_resumo.slice(0, 300)}{item.texto_resumo.length > 300 ? '...' : ''}"
+                    </p>
+                )}
+                {item.data_disponibilizacao && (
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '6px', color: 'var(--text-muted)', fontSize: '0.8rem', marginTop: '4px' }}>
+                        <Calendar size={13} />
+                        {item.data_disponibilizacao}
+                    </div>
+                )}
+            </div>
+        </li>
     );
 }
 

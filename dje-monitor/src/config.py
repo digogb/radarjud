@@ -67,6 +67,13 @@ class Config:
     worker_threads: int = int(os.getenv("DJE_WORKER_THREADS", "8"))
     rate_limit_per_second: float = float(os.getenv("DJE_RATE_LIMIT_PER_SEC", "2.0"))
 
+    # Busca Semântica (Qdrant + Nomic)
+    qdrant_url: str = os.getenv("DJE_QDRANT_URL", "http://qdrant:6333")
+    embedding_model: str = os.getenv("DJE_EMBEDDING_MODEL", "nomic-ai/nomic-embed-text-v1.5")
+    embedding_dims: int = int(os.getenv("DJE_EMBEDDING_DIMS", "256"))
+    semantic_score_threshold: float = float(os.getenv("DJE_SEMANTIC_SCORE_THRESHOLD", "0.35"))
+    semantic_max_results: int = int(os.getenv("DJE_SEMANTIC_MAX_RESULTS", "20"))
+
     def __post_init__(self):
         self.base_dir = Path(self.base_dir)
         self.data_dir = self.base_dir / "data"

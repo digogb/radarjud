@@ -309,6 +309,67 @@ export const alertaApi = {
     },
 };
 
+// ===== Busca Semântica =====
+
+export interface SemanticResult {
+    pub_id?: number;
+    processo_id?: number;
+    score: number;
+    tribunal?: string;
+    numero_processo?: string;
+    data_disponibilizacao?: string;
+    polo_ativo?: string;
+    polo_passivo?: string;
+    orgao?: string;
+    tipo_comunicacao?: string;
+    texto_resumo?: string;
+    total_publicacoes?: number;
+    pessoa_id?: number;
+}
+
+export interface SemanticResponse {
+    query: string;
+    tipo: string;
+    total: number;
+    results: SemanticResult[];
+}
+
+export interface SemanticStatusCollection {
+    points: number;
+    vectors: number;
+    status: string;
+}
+
+export interface SemanticStatus {
+    status: string;
+    collections?: Record<string, SemanticStatusCollection>;
+    message?: string;
+}
+
+export const semanticApi = {
+    search: async (params: {
+        q: string;
+        tribunal?: string;
+        pessoa_id?: number;
+        limit?: number;
+        score_threshold?: number;
+        tipo?: 'publicacoes' | 'processos';
+    }): Promise<SemanticResponse> => {
+        const response = await api.get('/v1/search/semantic', { params });
+        return response.data;
+    },
+
+    status: async (): Promise<SemanticStatus> => {
+        const response = await api.get('/v1/search/semantic/status');
+        return response.data;
+    },
+
+    reindex: async (): Promise<{ status: string }> => {
+        const response = await api.post('/v1/search/reindex');
+        return response.data;
+    },
+};
+
 export const importacaoApi = {
     importarPlanilha: async (
         arquivo: File,

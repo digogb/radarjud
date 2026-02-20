@@ -169,6 +169,30 @@ class PublicacaoMonitorada(Base):
     pessoa = relationship("PessoaMonitorada", back_populates="publicacoes")
     alertas = relationship("Alerta", back_populates="publicacao")
 
+    def to_dict(self) -> dict:
+        """Converte para dicionário para uso no embedding service e backfill."""
+        import json as _json
+        polos = {}
+        try:
+            polos = _json.loads(self.polos_json or "{}")
+        except (ValueError, TypeError):
+            pass
+        return {
+            "id": self.id,
+            "pessoa_id": self.pessoa_id,
+            "tribunal": self.tribunal or "",
+            "numero_processo": self.numero_processo or "",
+            "data_disponibilizacao": self.data_disponibilizacao or "",
+            "orgao": self.orgao or "",
+            "tipo_comunicacao": self.tipo_comunicacao or "",
+            "texto_completo": self.texto_completo or "",
+            "texto_resumo": self.texto_resumo or "",
+            "polos_json": self.polos_json or "{}",
+            "polos": polos,
+            "link": self.link or "",
+            "criado_em": self.criado_em.isoformat() if self.criado_em else None,
+        }
+
     def __repr__(self):
         return f"<PublicacaoMonitorada(processo='{self.numero_processo}', tribunal='{self.tribunal}')>"
 

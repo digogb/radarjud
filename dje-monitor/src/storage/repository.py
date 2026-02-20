@@ -779,6 +779,46 @@ class DiarioRepository:
             for a in alertas
         ]
 
+    # ===== Backfill / Reindexação Semântica =====
+
+    def get_publicacoes_batch(self, offset: int = 0, limit: int = 100) -> list:
+        """Retorna batch de publicações para reindexação (mantém ORM detachado)."""
+        with self.get_session() as session:
+            results = (
+                session.query(PublicacaoMonitorada)
+                .order_by(PublicacaoMonitorada.id)
+                .offset(offset)
+                .limit(limit)
+                .all()
+            )
+            for obj in results:
+                session.expunge(obj)
+            return results
+
+    def get_all_processos_com_publicacoes(self) -> list:
+        """Agrupa publicações por numero_processo para indexação de processos."""
+        with self.get_session() as session:
+            pubs = (
+                session.query(PublicacaoMonitorada)
+                .filter(PublicacaoMonitorada.numero_processo.isnot(None))
+                .order_by(PublicacaoMonitorada.numero_processo)
+                .all()
+            )
+            processos: dict = {}
+            for pub in pubs:
+                key = pub.numero_processo
+                if not key:
+                    continue
+                if key not in processos:
+                    processos[key] = {
+                        "numero_processo": key,
+                        "tribunal": pub.tribunal,
+                        "publicacoes": [],
+                    }
+                processos[key]["publicacoes"].append(pub.to_dict())
+
+        return list(processos.values())
+
     def estatisticas(self) -> dict:
         """Retorna estatísticas do sistema."""
         with self.get_session() as session:
