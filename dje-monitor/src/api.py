@@ -4,6 +4,7 @@ from pydantic import BaseModel
 from typing import List, Optional, Any
 from datetime import date
 import logging
+import re
 import sys
 import os
 
@@ -77,11 +78,13 @@ def startup_event():
     _init_scheduler()
     # Garantir collections do Qdrant
     try:
-        from services.embedding_service import ensure_collections
+        from services.embedding_service import ensure_collections, get_model
         ensure_collections()
         logger.info("Qdrant collections verificadas.")
+        get_model()
+        logger.info("Modelo de embedding carregado.")
     except Exception as e:
-        logger.warning(f"Qdrant indisponível no startup: {e}")
+        logger.warning(f"Qdrant/Embedding indisponível no startup: {e}")
 
 
 @app.on_event("shutdown")
@@ -124,6 +127,33 @@ async def search_name(
                 r for r in resultados
                 if (r.get("siglaTribunal") or r.get("tribunal", "")).upper() == tribunal.upper()
             ]
+
+        # Remover processos de referência das pessoas monitoradas com esse nome
+        processos_referencia: set[str] = set()
+        try:
+            from storage.models import PessoaMonitorada as _PessoaModel
+            from utils.data_normalizer import normalizar_nome as _norm
+            nome_norm = _norm(nome)
+            with repo.get_session() as session:
+                candidatos = (
+                    session.query(_PessoaModel.nome, _PessoaModel.numero_processo)
+                    .filter(_PessoaModel.ativo == True, _PessoaModel.numero_processo != None)
+                    .all()
+                )
+                for p_nome, p_proc in candidatos:
+                    if _norm(p_nome) == nome_norm and p_proc:
+                        processos_referencia.add(re.sub(r"\D", "", p_proc))
+        except Exception as e_ref:
+            logger.warning(f"Não foi possível buscar processos referência: {e_ref}")
+
+        if processos_referencia:
+            antes = len(resultados)
+            resultados = [
+                r for r in resultados
+                if re.sub(r"\D", "", r.get("processo", "")) not in processos_referencia
+            ]
+            logger.info(f"Filtro de processos referência: {antes} → {len(resultados)} resultados")
+
         return {"count": len(resultados), "results": resultados}
     except Exception as e:
         logger.error(f"Erro na busca API: {e}", exc_info=True)
@@ -403,17 +433,69 @@ def semantic_search(
     - **tipo**: "publicacoes" ou "processos"
     """
     from services.embedding_service import search_publicacoes, search_processos
+    from storage.models import PublicacaoMonitorada
     try:
         if tipo == "processos":
             results = search_processos(
                 query=q, tribunal=tribunal,
                 limit=limit, score_threshold=score_threshold,
             )
+            # Enriquecer processos com publicações completas do PostgreSQL
+            numeros = [r.get("numero_processo") for r in results if r.get("numero_processo")]
+            if numeros:
+                with repo.get_session() as session:
+                    pubs = (
+                        session.query(PublicacaoMonitorada)
+                        .filter(PublicacaoMonitorada.numero_processo.in_(numeros))
+                        .order_by(PublicacaoMonitorada.data_disponibilizacao.desc())
+                        .all()
+                    )
+                    # Agrupar publicações por numero_processo
+                    pubs_por_processo: dict = {}
+                    for p in pubs:
+                        key = p.numero_processo
+                        if key not in pubs_por_processo:
+                            pubs_por_processo[key] = []
+                        d = p.to_dict()
+                        pubs_por_processo[key].append({
+                            "id": d.get("id"),
+                            "texto_resumo": (d.get("texto_resumo") or "")[:300],
+                            "texto_completo": d.get("texto_completo", ""),
+                            "data_disponibilizacao": d.get("data_disponibilizacao", ""),
+                            "orgao": d.get("orgao", ""),
+                            "tipo_comunicacao": d.get("tipo_comunicacao", ""),
+                            "link": d.get("link", ""),
+                            "polo_ativo": d.get("polo_ativo", ""),
+                            "polo_passivo": d.get("polo_passivo", ""),
+                        })
+                for r in results:
+                    r["publicacoes"] = pubs_por_processo.get(r.get("numero_processo"), [])
+                    r["total_publicacoes"] = len(r["publicacoes"])
         else:
             results = search_publicacoes(
                 query=q, tribunal=tribunal, pessoa_id=pessoa_id,
                 limit=limit, score_threshold=score_threshold,
             )
+            # Enriquecer com dados completos do PostgreSQL
+            pub_ids = [r["pub_id"] for r in results]
+            if pub_ids:
+                with repo.get_session() as session:
+                    pubs = session.query(PublicacaoMonitorada).filter(
+                        PublicacaoMonitorada.id.in_(pub_ids)
+                    ).all()
+                    pub_map = {p.id: p.to_dict() for p in pubs}
+                for r in results:
+                    full = pub_map.get(r["pub_id"], {})
+                    if full:
+                        r["texto_completo"] = full.get("texto_completo", "")
+                        r["texto_resumo"] = full.get("texto_resumo", "")
+                        r["polos"] = full.get("polos", {})
+                        r["link"] = full.get("link", "")
+                        r["data_disponibilizacao"] = full.get("data_disponibilizacao", "")
+                        r["orgao"] = full.get("orgao", "")
+                        r["numero_processo"] = full.get("numero_processo", "")
+                        r["tribunal"] = full.get("tribunal", "")
+                        r["tipo_comunicacao"] = full.get("tipo_comunicacao", "")
         return {
             "query": q,
             "tipo": tipo,

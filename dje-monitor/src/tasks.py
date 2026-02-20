@@ -164,11 +164,12 @@ def reindexar_tudo_task() -> None:
     """Backfill: reindexar todas as publicações existentes no Qdrant.
     Processa em batches para não sobrecarregar memória.
     """
-    from services.embedding_service import ensure_collections, index_publicacao
+    from services.embedding_service import ensure_collections, index_publicacao, index_processo
 
     ensure_collections()
     repo = DiarioRepository(config.database_url)
 
+    # 1. Indexar publicações
     offset = 0
     batch_size = 100
     total = 0
@@ -186,4 +187,16 @@ def reindexar_tudo_task() -> None:
         offset += batch_size
         logger.info(f"Reindex: {total} publicações processadas...")
 
-    logger.info(f"Reindex completo: {total} publicações indexadas.")
+    logger.info(f"Reindex publicações completo: {total} indexadas.")
+
+    # 2. Indexar processos (agrupamento por numero_processo)
+    processos = repo.get_all_processos_com_publicacoes()
+    total_proc = 0
+    for proc in processos:
+        try:
+            index_processo(proc["numero_processo"], proc)
+            total_proc += 1
+        except Exception as e:
+            logger.error(f"reindexar_tudo_task: erro ao indexar processo {proc.get('numero_processo')}: {e}")
+
+    logger.info(f"Reindex processos completo: {total_proc} indexados.")

@@ -2,19 +2,15 @@ import { useState, useEffect, useRef } from 'react'
 import { createPortal } from 'react-dom'
 import { useNavigate, useLocation } from 'react-router-dom'
 import { Search, FileText, Eye, EyeOff, AlertCircle, X, Calendar, Building, Users, Scale, ExternalLink, Bell, Check, Sparkles } from 'lucide-react'
-import { processoApi, pessoaMonitoradaApi, semanticApi, SemanticResult } from '../services/api'
+import { processoApi, pessoaMonitoradaApi, semanticApi, SemanticResult, ProcessoPublicacao } from '../services/api'
 
 export default function Busca() {
   const navigate = useNavigate()
   const location = useLocation()
-  const [tiposBusca, setTipoBusca] = useState<'numero' | 'cpf' | 'nome'>('nome')
-  const [numero] = useState('')
-  const [cpf] = useState('')
   const [nome, setNome] = useState('')
-  // Estado para tribunal, padrão 'Todos'
   const [tribunal, setTribunal] = useState('Todos')
   const [loading, setLoading] = useState(false)
-  const [resultados, setResultados] = useState<any[]>([]) // Use any[] or Processo[] if interface is available
+  const [resultados, setResultados] = useState<any[]>([])
   const [buscou, setBuscou] = useState(false)
   const [error, setError] = useState('')
   const [monitorando, setMonitorando] = useState(false)
@@ -22,13 +18,25 @@ export default function Busca() {
   const [ultimoTermoBuscado, setUltimoTermoBuscado] = useState('')
   const [hideMonitorar, setHideMonitorar] = useState(false)
 
-  // Busca semântica
-  const [modoBusca, setModoBusca] = useState<'exata' | 'semantica'>('exata')
-  const [tipoSemantico, setTipoSemantico] = useState<'publicacoes' | 'processos'>('publicacoes')
+  // Modo de busca unificado: exata | sem-publicacoes | sem-processos
+  const [modoBusca, setModoBuscaRaw] = useState<'exata' | 'sem-publicacoes' | 'sem-processos'>('exata')
   const [resultadosSemanticos, setResultadosSemanticos] = useState<SemanticResult[]>([])
   const [loadingSemantico, setLoadingSemantico] = useState(false)
   const [buscouSemantico, setBuscouSemantico] = useState(false)
   const [errorSemantico, setErrorSemantico] = useState('')
+  const isSemantico = modoBusca.startsWith('sem-')
+
+  const setModoBusca = (modo: 'exata' | 'sem-publicacoes' | 'sem-processos') => {
+    setModoBuscaRaw(modo)
+    // Limpar resultados ao trocar de aba
+    setBuscou(false)
+    setResultados([])
+    setBuscouSemantico(false)
+    setResultadosSemanticos([])
+    setError('')
+    setErrorSemantico('')
+    setMonitoradoSucesso(false)
+  }
 
   const tribunais = [
     'Todos', // Adicionado opção Todos
@@ -103,7 +111,7 @@ export default function Busca() {
       const resp = await semanticApi.search({
         q: query,
         tribunal: filtroTribunal === 'Todos' ? undefined : filtroTribunal,
-        tipo: tipoSemantico,
+        tipo: modoBusca === 'sem-publicacoes' ? 'publicacoes' : 'processos',
       })
       setResultadosSemanticos(resp.results)
     } catch (err: any) {
@@ -117,15 +125,10 @@ export default function Busca() {
   const handleBuscar = async (e: React.FormEvent) => {
     e.preventDefault()
 
-    // Determinar termo
-    let termo = ''
-    if (tiposBusca === 'numero') termo = numero
-    else if (tiposBusca === 'cpf') termo = cpf.replace(/\D/g, '')
-    else if (tiposBusca === 'nome') termo = nome
-
+    const termo = nome
     if (!termo) return
 
-    if (modoBusca === 'semantica') {
+    if (isSemantico) {
       await executarBuscaSemantica(termo, tribunal)
     } else {
       await executarBusca(termo, tribunal)
@@ -192,83 +195,65 @@ export default function Busca() {
 
   return (
     <div className="container py-8 max-w-5xl mx-auto animate-fadeIn">
-      {/* ... (Header and Search Type buttons remain same) ... */}
       <header className="page-header">
-        <h1 className="page-title">Buscar Processo</h1>
-        <p className="page-subtitle">Pesquise processos por número, CPF ou nome da parte</p>
+        <h1 className="page-title">
+          {modoBusca === 'exata' ? 'Buscar Processo' : 'Busca Semântica'}
+        </h1>
+        <p className="page-subtitle">
+          {modoBusca === 'exata'
+            ? 'Pesquise processos por número ou nome da parte'
+            : modoBusca === 'sem-publicacoes'
+              ? 'Pesquise publicações por contexto e significado'
+              : 'Pesquise processos por contexto e significado'}
+        </p>
       </header>
-
-      {/* Search Form */}
-      {/* Search Form */}
-      {/* Search Form */}
       <div className="search-section">
 
-        {/* Toggle Modo de Busca */}
-        <div className="search-type-section" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: '12px' }}>
-            <div>
-              <h3 className="search-type-title">Tipo de Busca</h3>
-              <div className="flex gap-3">
-                  <button
-                      type="button"
-                      className={`btn ${tiposBusca === 'nome' ? 'btn-primary' : 'btn-secondary'} btn-sm`}
-                      onClick={() => setTipoBusca('nome')}
-                  >
-                      Nome ou Processo
-                  </button>
-              </div>
-            </div>
-            <div style={{ display: 'flex', alignItems: 'center', gap: '8px', background: 'var(--surface)', padding: '4px', borderRadius: '8px', border: '1px solid var(--border)' }}>
-              <button
-                type="button"
-                onClick={() => setModoBusca('exata')}
-                className={`btn btn-sm ${modoBusca === 'exata' ? 'btn-primary' : 'btn-ghost'}`}
-                style={{ display: 'flex', alignItems: 'center', gap: '6px' }}
-              >
-                <Search size={14} />
-                Busca Exata
-              </button>
-              <button
-                type="button"
-                onClick={() => setModoBusca('semantica')}
-                className={`btn btn-sm ${modoBusca === 'semantica' ? 'btn-primary' : 'btn-ghost'}`}
-                style={{ display: 'flex', alignItems: 'center', gap: '6px' }}
-              >
-                <Sparkles size={14} />
-                Busca Semântica
-              </button>
-            </div>
+        {/* Abas de modo de busca */}
+        <div style={{ display: 'flex', gap: '4px', background: 'var(--surface)', padding: '4px', borderRadius: '10px', border: '1px solid var(--border)', marginBottom: '16px' }}>
+          <button
+            type="button"
+            onClick={() => setModoBusca('exata')}
+            className={`btn btn-sm ${modoBusca === 'exata' ? 'btn-primary' : 'btn-ghost'}`}
+            style={{ display: 'flex', alignItems: 'center', gap: '6px', flex: 1, justifyContent: 'center' }}
+          >
+            <Search size={14} />
+            Busca por Nome
+          </button>
+          <button
+            type="button"
+            onClick={() => setModoBusca('sem-publicacoes')}
+            className={`btn btn-sm ${modoBusca === 'sem-publicacoes' ? 'btn-primary' : 'btn-ghost'}`}
+            style={{ display: 'flex', alignItems: 'center', gap: '6px', flex: 1, justifyContent: 'center' }}
+          >
+            <Sparkles size={14} />
+            Semântica: Publicações
+          </button>
+          <button
+            type="button"
+            onClick={() => setModoBusca('sem-processos')}
+            className={`btn btn-sm ${modoBusca === 'sem-processos' ? 'btn-primary' : 'btn-ghost'}`}
+            style={{ display: 'flex', alignItems: 'center', gap: '6px', flex: 1, justifyContent: 'center' }}
+          >
+            <Sparkles size={14} />
+            Semântica: Processos
+          </button>
         </div>
 
-        {/* Opções adicionais no modo semântico */}
-        {modoBusca === 'semantica' && (
-          <div style={{ display: 'flex', gap: '8px', padding: '8px 0', alignItems: 'center' }}>
-            <span style={{ fontSize: '0.85rem', color: 'var(--text-muted)' }}>Buscar em:</span>
-            <button
-              type="button"
-              onClick={() => setTipoSemantico('publicacoes')}
-              className={`btn btn-sm ${tipoSemantico === 'publicacoes' ? 'btn-primary' : 'btn-secondary'}`}
-            >
-              Publicações
-            </button>
-            <button
-              type="button"
-              onClick={() => setTipoSemantico('processos')}
-              className={`btn btn-sm ${tipoSemantico === 'processos' ? 'btn-primary' : 'btn-secondary'}`}
-            >
-              Processos
-            </button>
-          </div>
-        )}
-
         <form onSubmit={handleBuscar} className="search-form-row">
-          {tiposBusca === 'nome' && (
             <>
               <div className="search-input-wrapper">
                 <label className="search-field-label">Termo</label>
                 <input
                   type="text"
                   className="input-field"
-                  placeholder="Digite o Nome da Parte ou Número do Processo (CNJ)"
+                  placeholder={
+                    modoBusca === 'exata'
+                      ? 'Digite o Nome da Parte ou Número do Processo (CNJ)'
+                      : modoBusca === 'sem-publicacoes'
+                        ? 'Descreva o que procura nas publicações (ex: execução fiscal, dívida tributária)'
+                        : 'Descreva o que procura nos processos (ex: dano moral, cumprimento de sentença)'
+                  }
                   value={nome}
                   onChange={(e) => setNome(e.target.value)}
                 />
@@ -297,7 +282,6 @@ export default function Busca() {
                 </div>
               </div>
             </>
-          )}
 
           <div className="search-actions">
             <button 
@@ -320,8 +304,8 @@ export default function Busca() {
         </div>
       )}
 
-      {/* Results */}
-      {buscou && (
+      {/* Resultados busca exata */}
+      {buscou && modoBusca === 'exata' && (
         <div className="results-section">
           <div className="results-header">
             {/* Mantemos cabeçalho simples pois o detalhe vai pro drawer */}
@@ -392,7 +376,7 @@ export default function Busca() {
       )}
       
       {/* Resultados Semânticos */}
-      {modoBusca === 'semantica' && buscouSemantico && (
+      {isSemantico && buscouSemantico && (
         <div className="results-section">
           <div className="results-header">
             <div className="flex items-center gap-2">
@@ -425,7 +409,7 @@ export default function Busca() {
           ) : (
             <ul className="processo-list">
               {resultadosSemanticos.map((item, idx) => (
-                <SemanticResultItem key={item.pub_id ?? item.processo_id ?? idx} item={item} tipo={tipoSemantico} onBuscaProcesso={handleProcessoClick} />
+                <SemanticResultItem key={item.pub_id ?? item.processo_id ?? idx} item={item} tipo={modoBusca === 'sem-publicacoes' ? 'publicacoes' : 'processos'} onBuscaProcesso={handleProcessoClick} />
               ))}
             </ul>
           )}
@@ -657,13 +641,87 @@ function DrawerPublicacaoItem({ item, index }: { item: any; index: number; key?:
 }
 
 // Componente de card para resultado semântico
+function PublicacaoItem({ pub }: { pub: ProcessoPublicacao; key?: string | number }) {
+    const [expandido, setExpandido] = useState(false);
+    const texto = pub.texto_completo || pub.texto_resumo || '';
+    const PREVIEW_LEN = 200;
+    const temMais = texto.length > PREVIEW_LEN;
+
+    return (
+        <div style={{ padding: '10px 12px', background: 'rgba(255,255,255,0.03)', borderRadius: '6px', border: '1px solid var(--border)' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: '8px', marginBottom: '6px' }}>
+                <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: '8px', fontSize: '0.8rem' }}>
+                    {pub.data_disponibilizacao && (
+                        <span style={{ display: 'flex', alignItems: 'center', gap: '4px', color: 'var(--text-muted)' }}>
+                            <Calendar size={12} />
+                            {pub.data_disponibilizacao}
+                        </span>
+                    )}
+                    {pub.orgao && <span style={{ color: 'var(--text-secondary)' }}>{pub.orgao}</span>}
+                    {pub.tipo_comunicacao && <span style={{ color: 'var(--text-muted)', fontSize: '0.75rem' }}>({pub.tipo_comunicacao})</span>}
+                </div>
+                {pub.link && (
+                    <a
+                        href={pub.link}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        style={{ display: 'flex', alignItems: 'center', gap: '4px', color: 'var(--primary)', fontSize: '0.8rem', textDecoration: 'none', whiteSpace: 'nowrap' }}
+                    >
+                        <ExternalLink size={13} />
+                        Ver original
+                    </a>
+                )}
+            </div>
+            {(pub.polo_ativo || pub.polo_passivo) && (
+                <div style={{ display: 'flex', flexWrap: 'wrap', gap: '4px', marginBottom: '6px' }}>
+                    {pub.polo_ativo && (
+                        <span style={{ fontSize: '0.7rem', padding: '1px 6px', borderRadius: '3px', background: 'rgba(16, 185, 129, 0.1)', color: '#059669', border: '1px solid rgba(16, 185, 129, 0.2)' }}>
+                            {pub.polo_ativo}
+                        </span>
+                    )}
+                    {pub.polo_ativo && pub.polo_passivo && (
+                        <span style={{ color: 'var(--text-muted)', fontSize: '0.65rem', alignSelf: 'center' }}>vs</span>
+                    )}
+                    {pub.polo_passivo && (
+                        <span style={{ fontSize: '0.7rem', padding: '1px 6px', borderRadius: '3px', background: 'rgba(239, 68, 68, 0.1)', color: '#dc2626', border: '1px solid rgba(239, 68, 68, 0.2)' }}>
+                            {pub.polo_passivo}
+                        </span>
+                    )}
+                </div>
+            )}
+            {texto && (
+                <div>
+                    <p style={{ fontSize: '0.8rem', color: 'var(--text-secondary)', lineHeight: '1.4', margin: 0, whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>
+                        {expandido ? texto : texto.slice(0, PREVIEW_LEN)}{!expandido && temMais ? '...' : ''}
+                    </p>
+                    {temMais && (
+                        <button
+                            onClick={() => setExpandido(!expandido)}
+                            style={{ background: 'none', border: 'none', color: 'var(--primary)', cursor: 'pointer', fontSize: '0.75rem', padding: '2px 0', marginTop: '2px' }}
+                        >
+                            {expandido ? 'Ver menos' : 'Ver texto completo'}
+                        </button>
+                    )}
+                </div>
+            )}
+        </div>
+    );
+}
+
 function SemanticResultItem({ item, tipo, onBuscaProcesso }: {
     item: SemanticResult;
     tipo: 'publicacoes' | 'processos';
     onBuscaProcesso: (proc: string) => void;
+    key?: string | number;
 }) {
+    const [expandido, setExpandido] = useState(false);
+    const [pubsExpandidas, setPubsExpandidas] = useState(false);
     const scorePercent = Math.round(item.score * 100);
     const scoreColor = scorePercent >= 70 ? '#10b981' : scorePercent >= 50 ? '#f59e0b' : '#ef4444';
+    const textoCompleto = item.texto_completo || item.texto_resumo || '';
+    const PREVIEW_LEN = 300;
+    const temMais = textoCompleto.length > PREVIEW_LEN;
+    const publicacoes = item.publicacoes || [];
 
     return (
         <li className="processo-item">
@@ -692,45 +750,97 @@ function SemanticResultItem({ item, tipo, onBuscaProcesso }: {
             </div>
 
             <div className="processo-info" style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
-                {tipo === 'processos' && item.total_publicacoes !== undefined && (
-                    <div className="processo-info-item">
-                        <span className="processo-info-label">Publicações</span>
-                        <span className="processo-info-value">{item.total_publicacoes}</span>
-                    </div>
+                {tipo === 'publicacoes' && (
+                    <>
+                        {item.orgao && (
+                            <div className="processo-info-item">
+                                <span className="processo-info-label">Órgão</span>
+                                <span className="processo-info-value">{item.orgao}{item.tipo_comunicacao ? ` • ${item.tipo_comunicacao}` : ''}</span>
+                            </div>
+                        )}
+                        {(item.polo_ativo || item.polo_passivo) && (
+                            <div className="processo-partes" style={{ display: 'flex', flexWrap: 'wrap', gap: '6px', marginTop: '4px' }}>
+                                {item.polo_ativo && (
+                                    <span className="parte-tag" style={{ fontSize: '0.75rem', background: 'rgba(16, 185, 129, 0.1)', color: '#059669', border: '1px solid rgba(16, 185, 129, 0.2)' }}>
+                                        {item.polo_ativo}
+                                    </span>
+                                )}
+                                {item.polo_ativo && item.polo_passivo && (
+                                    <span style={{ color: 'var(--text-muted)', fontSize: '0.7rem', fontWeight: 600, alignSelf: 'center' }}>vs</span>
+                                )}
+                                {item.polo_passivo && (
+                                    <span className="parte-tag" style={{ fontSize: '0.75rem', background: 'rgba(239, 68, 68, 0.1)', color: '#dc2626', border: '1px solid rgba(239, 68, 68, 0.2)' }}>
+                                        {item.polo_passivo}
+                                    </span>
+                                )}
+                            </div>
+                        )}
+                        {textoCompleto && (
+                            <div>
+                                <p style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', lineHeight: '1.5', margin: '4px 0 0 0', fontStyle: 'italic', whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>
+                                    "{expandido ? textoCompleto : textoCompleto.slice(0, PREVIEW_LEN)}{!expandido && temMais ? '...' : ''}"
+                                </p>
+                                {temMais && (
+                                    <button
+                                        onClick={() => setExpandido(!expandido)}
+                                        style={{ background: 'none', border: 'none', color: 'var(--primary)', cursor: 'pointer', fontSize: '0.8rem', padding: '4px 0', marginTop: '2px' }}
+                                    >
+                                        {expandido ? 'Ver menos' : 'Ver texto completo'}
+                                    </button>
+                                )}
+                            </div>
+                        )}
+                        {item.link && (
+                            <a
+                                href={item.link}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                style={{ display: 'flex', alignItems: 'center', gap: '4px', color: 'var(--primary)', fontSize: '0.8rem', textDecoration: 'none', marginTop: '4px' }}
+                            >
+                                <ExternalLink size={13} />
+                                Ver documento original
+                            </a>
+                        )}
+                        {item.data_disponibilizacao && (
+                            <div style={{ display: 'flex', alignItems: 'center', gap: '6px', color: 'var(--text-muted)', fontSize: '0.8rem', marginTop: '4px' }}>
+                                <Calendar size={13} />
+                                {item.data_disponibilizacao}
+                            </div>
+                        )}
+                    </>
                 )}
-                {item.orgao && (
-                    <div className="processo-info-item">
-                        <span className="processo-info-label">Órgão</span>
-                        <span className="processo-info-value">{item.orgao}{item.tipo_comunicacao ? ` • ${item.tipo_comunicacao}` : ''}</span>
-                    </div>
-                )}
-                {(item.polo_ativo || item.polo_passivo) && (
-                    <div className="processo-partes" style={{ display: 'flex', flexWrap: 'wrap', gap: '6px', marginTop: '4px' }}>
-                        {item.polo_ativo && (
-                            <span className="parte-tag" style={{ fontSize: '0.75rem', background: 'rgba(16, 185, 129, 0.1)', color: '#059669', border: '1px solid rgba(16, 185, 129, 0.2)' }}>
-                                {item.polo_ativo}
+
+                {tipo === 'processos' && (
+                    <>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+                            <span style={{ fontSize: '0.85rem', color: 'var(--text-secondary)' }}>
+                                {publicacoes.length} publicação{publicacoes.length !== 1 ? 'ões' : ''}
                             </span>
+                            {publicacoes.length > 0 && (
+                                <button
+                                    onClick={() => setPubsExpandidas(!pubsExpandidas)}
+                                    style={{ background: 'none', border: 'none', color: 'var(--primary)', cursor: 'pointer', fontSize: '0.8rem', padding: '2px 0', display: 'flex', alignItems: 'center', gap: '4px' }}
+                                >
+                                    <FileText size={13} />
+                                    {pubsExpandidas ? 'Ocultar publicações' : 'Ver publicações'}
+                                </button>
+                            )}
+                        </div>
+                        {pubsExpandidas && publicacoes.length > 0 && (
+                            <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', marginTop: '4px' }}>
+                                {[...publicacoes].sort((a, b) => {
+                                    const parseDate = (d?: string) => {
+                                        if (!d) return 0
+                                        const [dd, mm, yyyy] = d.split('/')
+                                        return new Date(`${yyyy}-${mm}-${dd}`).getTime() || 0
+                                    }
+                                    return parseDate(b.data_disponibilizacao) - parseDate(a.data_disponibilizacao)
+                                }).map((pub, idx) => (
+                                    <PublicacaoItem key={pub.id ?? idx} pub={pub} />
+                                ))}
+                            </div>
                         )}
-                        {item.polo_ativo && item.polo_passivo && (
-                            <span style={{ color: 'var(--text-muted)', fontSize: '0.7rem', fontWeight: 600, alignSelf: 'center' }}>vs</span>
-                        )}
-                        {item.polo_passivo && (
-                            <span className="parte-tag" style={{ fontSize: '0.75rem', background: 'rgba(239, 68, 68, 0.1)', color: '#dc2626', border: '1px solid rgba(239, 68, 68, 0.2)' }}>
-                                {item.polo_passivo}
-                            </span>
-                        )}
-                    </div>
-                )}
-                {item.texto_resumo && (
-                    <p style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', lineHeight: '1.5', margin: '4px 0 0 0', fontStyle: 'italic' }}>
-                        "{item.texto_resumo.slice(0, 300)}{item.texto_resumo.length > 300 ? '...' : ''}"
-                    </p>
-                )}
-                {item.data_disponibilizacao && (
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '6px', color: 'var(--text-muted)', fontSize: '0.8rem', marginTop: '4px' }}>
-                        <Calendar size={13} />
-                        {item.data_disponibilizacao}
-                    </div>
+                    </>
                 )}
             </div>
         </li>

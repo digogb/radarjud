@@ -255,9 +255,9 @@ def search_publicacoes(
 
     query_filter = Filter(must=must_conditions) if must_conditions else None
 
-    results = client.search(
+    results = client.query_points(
         collection_name=COLLECTION_PUBLICACOES,
-        query_vector=vector,
+        query=vector,
         query_filter=query_filter,
         limit=limit,
         score_threshold=score_threshold,
@@ -267,9 +267,9 @@ def search_publicacoes(
         {
             "pub_id": r.id,
             "score": round(r.score, 4),
-            **r.payload,
+            **(r.payload or {}),
         }
-        for r in results
+        for r in results.points
     ]
 
 
@@ -284,7 +284,7 @@ def search_processos(
 
     cfg = _get_config()
     limit = limit or cfg.semantic_max_results
-    score_threshold = score_threshold if score_threshold is not None else cfg.semantic_score_threshold
+    score_threshold = score_threshold if score_threshold is not None else cfg.semantic_score_threshold_processos
 
     vector = encode(query, prefix="search_query")
     client = get_client()
@@ -295,9 +295,9 @@ def search_processos(
             must=[FieldCondition(key="tribunal", match=MatchValue(value=tribunal))]
         )
 
-    results = client.search(
+    results = client.query_points(
         collection_name=COLLECTION_PROCESSOS,
-        query_vector=vector,
+        query=vector,
         query_filter=query_filter,
         limit=limit,
         score_threshold=score_threshold,
@@ -307,7 +307,7 @@ def search_processos(
         {
             "processo_id": r.id,
             "score": round(r.score, 4),
-            **r.payload,
+            **(r.payload or {}),
         }
-        for r in results
+        for r in results.points
     ]

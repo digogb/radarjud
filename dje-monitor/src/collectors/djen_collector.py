@@ -179,8 +179,32 @@ class DJENCollector(BaseCollector):
             except Exception as e:
                 logger.warning(f"Erro na API direta ({self.API_URL}): {e}")
                 break
-        
-        return resultados
+
+        # Deduplicar por número de processo mantendo apenas a publicação mais recente.
+        # Um processo pode aparecer em múltiplas seções/órgãos do DJe no mesmo dia.
+        def _parse_data(r: dict) -> str:
+            """Retorna data no formato YYYY-MM-DD para ordenação; string vazia se inválida."""
+            raw = r.get("data_disponibilizacao", "")
+            if not raw:
+                return ""
+            # Formato DD/MM/YYYY → YYYY-MM-DD
+            partes = raw.split("/")
+            if len(partes) == 3:
+                return f"{partes[2]}-{partes[1]}-{partes[0]}"
+            return raw  # já está em YYYY-MM-DD ou similar
+
+        por_processo: dict = {}
+        sem_numero = []
+        for r in resultados:
+            proc = re.sub(r"\D", "", r.get("processo", ""))
+            if not proc:
+                sem_numero.append(r)
+                continue
+            existente = por_processo.get(proc)
+            if existente is None or _parse_data(r) >= _parse_data(existente):
+                por_processo[proc] = r
+
+        return list(por_processo.values()) + sem_numero
 
 
 

@@ -311,6 +311,18 @@ export const alertaApi = {
 
 // ===== Busca Semântica =====
 
+export interface ProcessoPublicacao {
+    id?: number;
+    texto_resumo?: string;
+    texto_completo?: string;
+    data_disponibilizacao?: string;
+    orgao?: string;
+    tipo_comunicacao?: string;
+    link?: string;
+    polo_ativo?: string;
+    polo_passivo?: string;
+}
+
 export interface SemanticResult {
     pub_id?: number;
     processo_id?: number;
@@ -323,8 +335,12 @@ export interface SemanticResult {
     orgao?: string;
     tipo_comunicacao?: string;
     texto_resumo?: string;
+    texto_completo?: string;
+    polos?: { ativo?: string[]; passivo?: string[] };
+    link?: string;
     total_publicacoes?: number;
     pessoa_id?: number;
+    publicacoes?: ProcessoPublicacao[];
 }
 
 export interface SemanticResponse {

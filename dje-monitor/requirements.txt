@@ -44,3 +44,4 @@ redis>=5.0.0
 # Busca Semântica
 sentence-transformers>=2.7.0
 qdrant-client>=1.9.0
+einops>=0.7.0

@@ -72,6 +72,7 @@ class Config:
     embedding_model: str = os.getenv("DJE_EMBEDDING_MODEL", "nomic-ai/nomic-embed-text-v1.5")
     embedding_dims: int = int(os.getenv("DJE_EMBEDDING_DIMS", "256"))
     semantic_score_threshold: float = float(os.getenv("DJE_SEMANTIC_SCORE_THRESHOLD", "0.35"))
+    semantic_score_threshold_processos: float = float(os.getenv("DJE_SEMANTIC_SCORE_THRESHOLD_PROCESSOS", "0.25"))
     semantic_max_results: int = int(os.getenv("DJE_SEMANTIC_MAX_RESULTS", "20"))
 
     def __post_init__(self):
