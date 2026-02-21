@@ -61,6 +61,7 @@ class MonitorService:
         logger.info(f"First check para: {nome}")
         resultados = self._buscar(nome, tribunal_filtro)
         novos = 0
+        novos_processos: set[str] = set()
         for item in resultados:
             hash_pub = gerar_hash_publicacao(item)
             if self.repo.publicacao_existe(hash_pub):
@@ -71,9 +72,12 @@ class MonitorService:
                 hash_unico=hash_pub,
                 gerar_alerta=False,
             )
-            self._enfileirar_indexacao(pub)
+            self._enfileirar_publicacao(pub)
+            if pub.numero_processo:
+                novos_processos.add(pub.numero_processo)
             novos += 1
 
+        self._enfileirar_processos(novos_processos)
         self.repo.atualizar_ultimo_check(pessoa_id)
         self.repo.atualizar_total_publicacoes(pessoa_id)
         logger.info(f"First check concluído para {nome}: {novos} publicações salvas")
@@ -117,6 +121,7 @@ class MonitorService:
 
         resultados = self._buscar(pessoa.nome, pessoa.tribunal_filtro)
         novos = 0
+        novos_processos: set[str] = set()
 
         for item in resultados:
             hash_pub = gerar_hash_publicacao(item)
@@ -129,7 +134,9 @@ class MonitorService:
                 dados=item,
                 hash_unico=hash_pub,
             )
-            self._enfileirar_indexacao(pub)
+            self._enfileirar_publicacao(pub)
+            if pub.numero_processo:
+                novos_processos.add(pub.numero_processo)
 
             # Não gerar alerta para publicações do processo de referência
             proc_digits = _re.sub(r"\D", "", item.get("numero_processo") or item.get("processo", ""))
@@ -150,6 +157,7 @@ class MonitorService:
             self._notificar(pessoa, item, alerta.id)
             novos += 1
 
+        self._enfileirar_processos(novos_processos)
         self.repo.atualizar_total_publicacoes(pessoa.id)
         return novos
 
@@ -199,42 +207,26 @@ class MonitorService:
             linhas.append(f"\n{texto[:400]}")
         return "\n".join(linhas)
 
-    def _enfileirar_indexacao(self, pub) -> None:
-        """Enfileira vetorização assíncrona da publicação e do processo no Qdrant."""
+    def _enfileirar_publicacao(self, pub) -> None:
+        """Enfileira vetorização assíncrona de uma publicação individual no Qdrant."""
         try:
-            from tasks import indexar_publicacao_task, indexar_processo_task
-            pub_dict = pub.to_dict()
-            indexar_publicacao_task.send(pub.id, pub_dict)
-
-            # Indexar o processo com histórico atualizado
-            if pub.numero_processo:
-                processo_data = self._montar_processo_data(pub.numero_processo)
-                if processo_data:
-                    indexar_processo_task.send(pub.numero_processo, processo_data)
+            from tasks import indexar_publicacao_task
+            indexar_publicacao_task.send(pub.id, pub.to_dict())
         except Exception as e:
             logger.warning(f"Não foi possível enfileirar indexação da pub {pub.id}: {e}")
 
-    def _montar_processo_data(self, numero_processo: str) -> dict | None:
-        """Monta dict do processo com todas suas publicações para indexação semântica."""
+    def _enfileirar_processos(self, numeros_processo: set[str]) -> None:
+        """Enfileira indexação de processos únicos — uma task por processo."""
+        if not numeros_processo:
+            return
         try:
-            from storage.models import PublicacaoMonitorada as _PM
-            with self.repo.get_session() as session:
-                pubs = (
-                    session.query(_PM)
-                    .filter(_PM.numero_processo == numero_processo)
-                    .order_by(_PM.data_disponibilizacao.desc())
-                    .all()
-                )
-                if not pubs:
-                    return None
-                return {
-                    "numero_processo": numero_processo,
-                    "tribunal": pubs[0].tribunal,
-                    "publicacoes": [p.to_dict() for p in pubs],
-                }
+            from tasks import indexar_processo_task
+            for numero_processo in numeros_processo:
+                processo_data = self.repo.get_publicacoes_por_processo(numero_processo)
+                if processo_data:
+                    indexar_processo_task.send(numero_processo, processo_data)
         except Exception as e:
-            logger.warning(f"Não foi possível montar dados do processo {numero_processo}: {e}")
-            return None
+            logger.warning(f"Não foi possível enfileirar indexação de processos: {e}")
 
     def _notificar(self, pessoa: PessoaMonitorada, item: dict, alerta_id: int) -> None:
         """Envia notificações externas (Telegram/Email) para uma nova publicação."""

@@ -22,6 +22,7 @@ logger = logging.getLogger(__name__)
 # Singleton para evitar recarregar modelo a cada task
 _model = None
 _client = None
+_collections_ready = False
 
 COLLECTION_PUBLICACOES = "publicacoes"
 COLLECTION_PROCESSOS = "processos"
@@ -57,7 +58,11 @@ def get_client():
 
 
 def ensure_collections():
-    """Cria collections e índices no Qdrant se não existirem."""
+    """Cria collections e índices no Qdrant se não existirem. Usa cache para evitar chamadas repetidas."""
+    global _collections_ready
+    if _collections_ready:
+        return
+
     from qdrant_client.models import (
         Distance, VectorParams, PayloadSchemaType
     )
@@ -79,6 +84,8 @@ def ensure_collections():
             client.create_payload_index(collection, "numero_processo", PayloadSchemaType.KEYWORD)
             client.create_payload_index(collection, "data_disponibilizacao", PayloadSchemaType.KEYWORD)
             logger.info(f"Collection '{collection}' criada com índices.")
+
+    _collections_ready = True
 
 
 def build_publicacao_text(pub: dict) -> str:
@@ -226,6 +233,181 @@ def index_processo(processo_id: str, processo: dict):
     logger.debug(f"Processo {processo_id} indexado no Qdrant.")
 
 
+def index_publicacoes_batch(items: list, batch_size: int = 32) -> int:
+    """Vetoriza e indexa um batch de publicações no Qdrant.
+
+    Args:
+        items: lista de tuplas (pub_id: int, pub: dict)
+        batch_size: tamanho do batch para o modelo de embedding
+
+    Returns:
+        Número de publicações indexadas.
+    """
+    from qdrant_client.models import PointStruct
+
+    cfg = _get_config()
+    model = get_model()
+    client = get_client()
+
+    # Filtrar itens com texto válido
+    valid = [
+        (pub_id, pub, build_publicacao_text(pub))
+        for pub_id, pub in items
+    ]
+    valid = [(pub_id, pub, text) for pub_id, pub, text in valid if text and len(text) >= 20]
+
+    if not valid:
+        return 0
+
+    texts = [f"search_document: {text}" for _, _, text in valid]
+    vectors = model.encode(texts, normalize_embeddings=True, batch_size=batch_size)
+
+    points = [
+        PointStruct(
+            id=pub_id,
+            vector=vectors[i][: cfg.embedding_dims].tolist(),
+            payload={
+                "pessoa_id": pub.get("pessoa_id"),
+                "tribunal": pub.get("tribunal"),
+                "numero_processo": pub.get("numero_processo"),
+                "data_disponibilizacao": pub.get("data_disponibilizacao") or pub.get("data_publicacao"),
+                "polo_ativo": _extract_polo(pub, "ativo")[:200],
+                "polo_passivo": _extract_polo(pub, "passivo")[:200],
+                "orgao": (pub.get("orgao") or "")[:200],
+                "tipo_comunicacao": (pub.get("tipo_comunicacao") or "")[:100],
+                "texto_resumo": text[:500],
+            },
+        )
+        for i, (pub_id, pub, text) in enumerate(valid)
+    ]
+
+    client.upsert(collection_name=COLLECTION_PUBLICACOES, points=points)
+    logger.debug(f"Batch de {len(points)} publicações indexado no Qdrant.")
+    return len(points)
+
+
+def index_processos_batch(processos: list, batch_size: int = 32) -> int:
+    """Vetoriza e indexa um batch de processos no Qdrant.
+
+    Args:
+        processos: lista de dicts com chaves numero_processo, tribunal, publicacoes
+        batch_size: tamanho do batch para o modelo de embedding
+
+    Returns:
+        Número de processos indexados.
+    """
+    from qdrant_client.models import PointStruct
+
+    cfg = _get_config()
+    model = get_model()
+    client = get_client()
+
+    valid = [
+        (proc, build_processo_text(proc))
+        for proc in processos
+    ]
+    valid = [(proc, text) for proc, text in valid if text and len(text) >= 20]
+
+    if not valid:
+        return 0
+
+    texts = [f"search_document: {text}" for _, text in valid]
+    vectors = model.encode(texts, normalize_embeddings=True, batch_size=batch_size)
+
+    points = [
+        PointStruct(
+            id=abs(hash(proc.get("numero_processo", ""))) % (2**63),
+            vector=vectors[i][: cfg.embedding_dims].tolist(),
+            payload={
+                "numero_processo": proc.get("numero_processo"),
+                "tribunal": proc.get("tribunal"),
+                "total_publicacoes": len(proc.get("publicacoes", [])),
+                "texto_resumo": text[:500],
+            },
+        )
+        for i, (proc, text) in enumerate(valid)
+    ]
+
+    client.upsert(collection_name=COLLECTION_PROCESSOS, points=points)
+    logger.debug(f"Batch de {len(points)} processos indexado no Qdrant.")
+    return len(points)
+
+
+def _log_score_stats(label: str, scores: list[float], threshold: float) -> None:
+    """Loga distribuição de scores para análise de qualidade."""
+    if not scores:
+        logger.info(f"[SEMANTIC] {label}: 0 resultados (threshold={threshold:.2f})")
+        return
+    buckets = {">=0.8": 0, "0.6-0.8": 0, "0.5-0.6": 0, "0.4-0.5": 0, "<0.4": 0}
+    for s in scores:
+        if s >= 0.8:
+            buckets[">=0.8"] += 1
+        elif s >= 0.6:
+            buckets["0.6-0.8"] += 1
+        elif s >= 0.5:
+            buckets["0.5-0.6"] += 1
+        elif s >= 0.4:
+            buckets["0.4-0.5"] += 1
+        else:
+            buckets["<0.4"] += 1
+    dist = " | ".join(f"{k}:{v}" for k, v in buckets.items() if v > 0)
+    logger.info(
+        f"[SEMANTIC] {label}: {len(scores)} resultado(s) | "
+        f"threshold={threshold:.2f} | min={min(scores):.4f} max={max(scores):.4f} "
+        f"avg={sum(scores)/len(scores):.4f} | dist=[{dist}]"
+    )
+
+
+# Query fixa que representa o conceito de "oportunidade de crédito" no DJe
+QUERY_OPORTUNIDADE_CREDITO = (
+    "alvará de levantamento de depósito judicial pagamento de crédito "
+    "recebimento de valores mandado de levantamento precatório execução "
+    "requisição de pequeno valor RPV acordo homologado desbloqueio ordem de pagamento"
+)
+
+
+def rerank_oportunidades(pub_ids: list, threshold: float = 0.45) -> dict:
+    """Pontua semanticamente candidatos a oportunidade de crédito pré-filtrados por keyword.
+
+    Usa Qdrant para buscar similaridade entre os pub_ids e a query canônica de oportunidade.
+    Retorna apenas os IDs cujo score está acima do threshold.
+
+    Em caso de erro (Qdrant indisponível, pub não indexado), retorna todos os candidatos
+    sem filtrar (fail-safe: melhor falso positivo que falso negativo).
+
+    Returns:
+        Dict {pub_id: score} para os aprovados.
+    """
+    if not pub_ids:
+        return {}
+
+    try:
+        from qdrant_client.models import Filter, HasIdCondition
+
+        vector = encode(QUERY_OPORTUNIDADE_CREDITO, prefix="search_query")
+        client = get_client()
+
+        results = client.query_points(
+            collection_name=COLLECTION_PUBLICACOES,
+            query=vector,
+            query_filter=Filter(must=[HasIdCondition(has_id=list(pub_ids))]),
+            limit=len(pub_ids),
+            score_threshold=threshold,
+        )
+
+        scores = {r.id: round(r.score, 4) for r in results.points}
+        all_scores = list(scores.values())
+        _log_score_stats(f"rerank_oportunidades ({len(pub_ids)} candidatos)", all_scores, threshold)
+        return scores
+
+    except Exception as e:
+        logger.warning(
+            f"rerank_oportunidades: erro no Qdrant, retornando todos os candidatos sem filtrar. {e}"
+        )
+        # Fail-safe: não descartar oportunidades por falha de infraestrutura
+        return {pub_id: 0.0 for pub_id in pub_ids}
+
+
 def search_publicacoes(
     query: str,
     tribunal: Optional[str] = None,
@@ -234,13 +416,17 @@ def search_publicacoes(
     score_threshold: Optional[float] = None,
 ) -> list:
     """Busca semântica em publicações com filtros opcionais."""
+    import time
     from qdrant_client.models import Filter, FieldCondition, MatchValue
 
     cfg = _get_config()
     limit = limit or cfg.semantic_max_results
     score_threshold = score_threshold if score_threshold is not None else cfg.semantic_score_threshold
 
+    t0 = time.perf_counter()
     vector = encode(query, prefix="search_query")
+    t_encode = time.perf_counter() - t0
+
     client = get_client()
 
     must_conditions = []
@@ -255,6 +441,7 @@ def search_publicacoes(
 
     query_filter = Filter(must=must_conditions) if must_conditions else None
 
+    t1 = time.perf_counter()
     results = client.query_points(
         collection_name=COLLECTION_PUBLICACOES,
         query=vector,
@@ -262,6 +449,15 @@ def search_publicacoes(
         limit=limit,
         score_threshold=score_threshold,
     )
+    t_qdrant = time.perf_counter() - t1
+
+    scores = [round(r.score, 4) for r in results.points]
+    filters_str = " ".join(filter(None, [tribunal, f"pessoa={pessoa_id}" if pessoa_id else None]))
+    logger.info(
+        f"[SEMANTIC:publicacoes] query={repr(query[:60])} filtros=[{filters_str}] "
+        f"encode={t_encode*1000:.0f}ms qdrant={t_qdrant*1000:.0f}ms"
+    )
+    _log_score_stats("publicacoes", scores, score_threshold)
 
     return [
         {
@@ -280,13 +476,17 @@ def search_processos(
     score_threshold: Optional[float] = None,
 ) -> list:
     """Busca semântica em processos (histórico concatenado)."""
+    import time
     from qdrant_client.models import Filter, FieldCondition, MatchValue
 
     cfg = _get_config()
     limit = limit or cfg.semantic_max_results
     score_threshold = score_threshold if score_threshold is not None else cfg.semantic_score_threshold_processos
 
+    t0 = time.perf_counter()
     vector = encode(query, prefix="search_query")
+    t_encode = time.perf_counter() - t0
+
     client = get_client()
 
     query_filter = None
@@ -295,6 +495,7 @@ def search_processos(
             must=[FieldCondition(key="tribunal", match=MatchValue(value=tribunal))]
         )
 
+    t1 = time.perf_counter()
     results = client.query_points(
         collection_name=COLLECTION_PROCESSOS,
         query=vector,
@@ -302,6 +503,14 @@ def search_processos(
         limit=limit,
         score_threshold=score_threshold,
     )
+    t_qdrant = time.perf_counter() - t1
+
+    scores = [round(r.score, 4) for r in results.points]
+    logger.info(
+        f"[SEMANTIC:processos] query={repr(query[:60])} filtros=[{tribunal or ''}] "
+        f"encode={t_encode*1000:.0f}ms qdrant={t_qdrant*1000:.0f}ms"
+    )
+    _log_score_stats("processos", scores, score_threshold)
 
     return [
         {

@@ -58,6 +58,28 @@ def normalizar_cpf(raw) -> Optional[str]:
     return None
 
 
+def normalizar_numero_processo(raw) -> Optional[str]:
+    """Normaliza número de processo para o formato CNJ: NNNNNNN-DD.AAAA.J.TT.OOOO.
+
+    Aceita o número com ou sem formatação (dígitos brutos ou já formatado).
+    Se não tiver 20 dígitos, retorna o valor limpo como está.
+    """
+    if not raw:
+        return None
+    # Remove espaços, quebras de linha e caracteres não-dígito
+    digitos = re.sub(r"\D", "", str(raw))
+    if not digitos:
+        return None
+    if len(digitos) == 20:
+        # Aplica máscara CNJ: NNNNNNN-DD.AAAA.J.TT.OOOO
+        return (
+            f"{digitos[:7]}-{digitos[7:9]}.{digitos[9:13]}"
+            f".{digitos[13]}.{digitos[14:16]}.{digitos[16:20]}"
+        )
+    # Número fora do padrão CNJ — retorna dígitos limpos
+    return digitos
+
+
 def parse_data_prazo(raw) -> Optional[date]:
     """Converte string de data 'dd/mm/yyyy HH:MM:SS' ou 'dd/mm/yyyy' para date."""
     if not raw:
@@ -131,7 +153,7 @@ def importar_planilha(
             dt_expiracao = (dt_prazo + relativedelta(years=ANOS_MONITORAMENTO)) if dt_prazo else None
 
             numero_processo_raw = row[col[HEADER_NUMERO_PROCESSO]] if HEADER_NUMERO_PROCESSO in col else None
-            numero_processo = str(numero_processo_raw).strip() if numero_processo_raw else None
+            numero_processo = normalizar_numero_processo(numero_processo_raw)
 
             comarca_raw = row[col[HEADER_COMARCA]] if HEADER_COMARCA in col else None
             comarca = str(comarca_raw).strip() if comarca_raw else None

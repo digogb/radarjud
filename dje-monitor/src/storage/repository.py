@@ -880,6 +880,23 @@ class DiarioRepository:
             PublicacaoMonitorada.texto_completo.ilike('%expedir precatório%'),
             PublicacaoMonitorada.texto_completo.ilike('%precatório%'),
         )
+        p4 = or_(
+            PublicacaoMonitorada.texto_completo.ilike('%requisição de pequeno valor%'),
+            and_(
+                PublicacaoMonitorada.texto_completo.ilike('%RPV%'),
+                PublicacaoMonitorada.texto_completo.ilike('%expedir%'),
+            ),
+        )
+        p5 = or_(
+            PublicacaoMonitorada.texto_completo.ilike('%homologação de acordo%'),
+            PublicacaoMonitorada.texto_completo.ilike('%acordo homologado%'),
+        )
+        p6 = or_(
+            PublicacaoMonitorada.texto_completo.ilike('%desbloqueio%'),
+            PublicacaoMonitorada.texto_completo.ilike('%levantamento do bloqueio%'),
+            PublicacaoMonitorada.texto_completo.ilike('%bloqueio levantado%'),
+        )
+        p7 = PublicacaoMonitorada.texto_completo.ilike('%ordem de pagamento%')
 
         with self.get_session() as session:
             rows = (
@@ -888,7 +905,7 @@ class DiarioRepository:
                 .filter(
                     PessoaMonitorada.ativo == True,
                     PublicacaoMonitorada.criado_em >= since,
-                    or_(p1, p2, p3),
+                    or_(p1, p2, p3, p4, p5, p6, p7),
                 )
                 .order_by(PublicacaoMonitorada.data_disponibilizacao.desc())
                 .limit(limit)
@@ -908,6 +925,14 @@ class DiarioRepository:
                     padrao = "expedição de precatório"
                 elif "precatório" in texto:
                     padrao = "precatório"
+                elif "requisição de pequeno valor" in texto or ("rpv" in texto and "expedir" in texto):
+                    padrao = "rpv"
+                elif "homologação de acordo" in texto or "acordo homologado" in texto:
+                    padrao = "acordo homologado"
+                elif "desbloqueio" in texto or "levantamento do bloqueio" in texto or "bloqueio levantado" in texto:
+                    padrao = "desbloqueio"
+                elif "ordem de pagamento" in texto:
+                    padrao = "ordem de pagamento"
                 else:
                     padrao = "sinal de recebimento"
 

@@ -560,9 +560,21 @@ def semantic_search(
 def buscar_oportunidades(
     dias: int = Query(30, ge=1, le=365, description="Janela de dias para varrer publicações"),
     limit: int = Query(50, ge=1, le=200, description="Máximo de resultados"),
+    semantico: bool = Query(True, description="Aplicar filtro semântico para reduzir falsos positivos"),
 ):
-    """Lista publicações recentes com sinais de recebimento de valores (alvará, levantamento, precatório)."""
+    """Lista publicações recentes com sinais de recebimento de valores (alvará, levantamento, precatório).
+
+    Com `semantico=true` (padrão), aplica reranking via Qdrant para filtrar resultados com baixa
+    relevância semântica, reduzindo falsos positivos do matching por palavra-chave.
+    """
     items = repo.buscar_oportunidades(dias=dias, limit=limit)
+    if semantico and items:
+        from services.embedding_service import rerank_oportunidades
+        pub_ids = [item["id"] for item in items]
+        scores = rerank_oportunidades(pub_ids, threshold=0.45)
+        items = [item for item in items if item["id"] in scores]
+        for item in items:
+            item["score_semantico"] = scores[item["id"]]
     return {"total": len(items), "items": items}
 
 

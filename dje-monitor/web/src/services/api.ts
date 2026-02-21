@@ -409,10 +409,11 @@ export interface OportunidadeItem {
     link?: string;
     padrao_detectado: string;
     criado_em: string;
+    score_semantico?: number;
 }
 
 export const oportunidadesApi = {
-    buscar: async (params?: { dias?: number; limit?: number }): Promise<{ total: number; items: OportunidadeItem[] }> => {
+    buscar: async (params?: { dias?: number; limit?: number; semantico?: boolean }): Promise<{ total: number; items: OportunidadeItem[] }> => {
         const response = await api.get('/v1/oportunidades', { params });
         return response.data;
     },

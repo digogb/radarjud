@@ -146,9 +146,25 @@ def desativar_expirados_task() -> None:
 def varrer_oportunidades_task() -> None:
     """Varre publicações recentes buscando sinais de recebimento de valores.
     Gera alertas especiais (OPORTUNIDADE_CREDITO) para cada match ainda não alertado.
+    Aplica reranking semântico para descartar falsos positivos antes de criar alertas.
     """
+    from services.embedding_service import rerank_oportunidades
     repo = DiarioRepository(config.database_url)
-    oportunidades = repo.buscar_oportunidades(dias=7, limit=500)
+    candidatos = repo.buscar_oportunidades(dias=7, limit=500)
+
+    # Filtro semântico: pontuar candidatos e descartar falsos positivos
+    if candidatos:
+        pub_ids = [op["id"] for op in candidatos]
+        scores = rerank_oportunidades(pub_ids, threshold=0.45)
+        oportunidades = [op for op in candidatos if op["id"] in scores]
+        descartados = len(candidatos) - len(oportunidades)
+        if descartados:
+            logger.info(
+                f"varrer_oportunidades_task: {descartados} publicação(ões) descartadas pelo filtro semântico"
+            )
+    else:
+        oportunidades = []
+
     novas = 0
     for op in oportunidades:
         if repo.alerta_oportunidade_existe(op["id"]):

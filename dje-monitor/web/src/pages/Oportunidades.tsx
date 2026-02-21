@@ -9,6 +9,10 @@ const PADROES_LABEL: Record<string, string> = {
   'alvará de pagamento': 'Alvará de Pagamento',
   'expedição de precatório': 'Expedição de Precatório',
   'precatório': 'Precatório',
+  'rpv': 'RPV',
+  'acordo homologado': 'Acordo Homologado',
+  'desbloqueio': 'Desbloqueio',
+  'ordem de pagamento': 'Ordem de Pagamento',
   'sinal de recebimento': 'Sinal de Recebimento',
 }
 
@@ -18,6 +22,10 @@ const PADROES_COR: Record<string, { bg: string; color: string }> = {
   'alvará de pagamento':       { bg: 'var(--success-muted)', color: 'var(--success)' },
   'expedição de precatório':   { bg: 'var(--warning-muted)', color: 'var(--warning)' },
   'precatório':                { bg: 'var(--warning-muted)', color: 'var(--warning)' },
+  'rpv':                       { bg: 'var(--success-muted)', color: 'var(--success)' },
+  'acordo homologado':         { bg: 'var(--warning-muted)', color: 'var(--warning)' },
+  'desbloqueio':               { bg: 'var(--accent-muted)',  color: 'var(--accent)'  },
+  'ordem de pagamento':        { bg: 'var(--success-muted)', color: 'var(--success)' },
   'sinal de recebimento':      { bg: 'var(--accent-muted)',  color: 'var(--accent)'  },
 }
 
@@ -250,6 +258,11 @@ function PublicacaoDrawerItem({
             <Calendar size={12} />
             {formatarData(item.data_disponibilizacao)}
           </span>
+          {item.score_semantico !== undefined && item.score_semantico > 0 && (
+            <span style={{ fontSize: '0.72rem', color: 'var(--text-muted)', fontVariantNumeric: 'tabular-nums' }} title="Relevância semântica">
+              {Math.round(item.score_semantico * 100)}%
+            </span>
+          )}
           {item.orgao && (
             <span style={{ fontSize: '0.78rem', color: 'var(--text-muted)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
               {item.orgao}
@@ -359,7 +372,7 @@ export default function Oportunidades() {
     setLoading(true)
     setBuscou(true)
     try {
-      const resp = await oportunidadesApi.buscar({ dias: diasSelecionados, limit: 200 })
+      const resp = await oportunidadesApi.buscar({ dias: diasSelecionados, limit: 200, semantico: true })
       setItens(resp.items)
     } catch {
       setError('Erro ao buscar oportunidades. Verifique se a API está disponível.')
