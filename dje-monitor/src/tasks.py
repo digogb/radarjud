@@ -108,6 +108,9 @@ def agendar_verificacoes_task() -> None:
     except Exception as e:
         logger.error(f"agendar_verificacoes_task: erro ao desativar expirados: {e}")
 
+    # Varrer oportunidades de crédito a cada ciclo de sync
+    varrer_oportunidades_task.send()
+
     pessoas = repo.pessoas_para_verificar_batch()
     if not pessoas:
         logger.debug("agendar_verificacoes_task: nenhuma pessoa para verificar")
@@ -128,6 +131,39 @@ def desativar_expirados_task() -> None:
     repo = DiarioRepository(config.database_url)
     expirados = repo.desativar_expirados()
     logger.info(f"desativar_expirados_task: {expirados} monitoramento(s) desativado(s)")
+
+
+# ============================================================
+# FILA: manutencao — Oportunidades de Crédito
+# ============================================================
+
+
+@dramatiq.actor(
+    queue_name="manutencao",
+    max_retries=1,
+    time_limit=120_000,  # 2 min
+)
+def varrer_oportunidades_task() -> None:
+    """Varre publicações recentes buscando sinais de recebimento de valores.
+    Gera alertas especiais (OPORTUNIDADE_CREDITO) para cada match ainda não alertado.
+    """
+    repo = DiarioRepository(config.database_url)
+    oportunidades = repo.buscar_oportunidades(dias=7, limit=500)
+    novas = 0
+    for op in oportunidades:
+        if repo.alerta_oportunidade_existe(op["id"]):
+            continue
+        titulo = f"Oportunidade: {op['padrao_detectado']} | {op['tribunal']}"
+        descricao = f"{op['pessoa_nome']} — {(op.get('texto_resumo') or '')[:300]}"
+        repo.registrar_alerta(
+            pessoa_id=op["pessoa_id"],
+            publicacao_id=op["id"],
+            tipo="OPORTUNIDADE_CREDITO",
+            titulo=titulo,
+            descricao=descricao,
+        )
+        novas += 1
+    logger.info(f"varrer_oportunidades_task: {novas} nova(s) oportunidade(s) detectada(s)")
 
 
 # ============================================================
@@ -163,13 +199,14 @@ def indexar_processo_task(processo_id: str, processo_data: dict) -> None:
 def reindexar_tudo_task() -> None:
     """Backfill: reindexar todas as publicações existentes no Qdrant.
     Processa em batches para não sobrecarregar memória.
+    Usa batch encode + batch upsert para máxima eficiência.
     """
-    from services.embedding_service import ensure_collections, index_publicacao, index_processo
+    from services.embedding_service import ensure_collections, index_publicacoes_batch, index_processos_batch
 
     ensure_collections()
     repo = DiarioRepository(config.database_url)
 
-    # 1. Indexar publicações
+    # 1. Indexar publicações em batch
     offset = 0
     batch_size = 100
     total = 0
@@ -178,25 +215,37 @@ def reindexar_tudo_task() -> None:
         pubs = repo.get_publicacoes_batch(offset=offset, limit=batch_size)
         if not pubs:
             break
-        for pub in pubs:
-            try:
-                index_publicacao(pub.id, pub.to_dict())
-                total += 1
-            except Exception as e:
-                logger.error(f"reindexar_tudo_task: erro ao indexar pub {pub.id}: {e}")
+        try:
+            items = [(pub.id, pub.to_dict()) for pub in pubs]
+            indexados = index_publicacoes_batch(items)
+            total += indexados
+        except Exception as e:
+            logger.error(f"reindexar_tudo_task: erro ao indexar batch offset={offset}: {e}")
         offset += batch_size
-        logger.info(f"Reindex: {total} publicações processadas...")
+        logger.info(f"Reindex publicações: {total} indexadas...")
 
     logger.info(f"Reindex publicações completo: {total} indexadas.")
 
-    # 2. Indexar processos (agrupamento por numero_processo)
-    processos = repo.get_all_processos_com_publicacoes()
+    # 2. Indexar processos em batch paginado (evita carregar tudo em memória)
+    proc_offset = 0
+    proc_batch_size = 50
     total_proc = 0
-    for proc in processos:
+
+    while True:
+        numeros = repo.get_distinct_processos_batch(offset=proc_offset, limit=proc_batch_size)
+        if not numeros:
+            break
+        processos = []
+        for numero in numeros:
+            proc_data = repo.get_publicacoes_por_processo(numero)
+            if proc_data:
+                processos.append(proc_data)
         try:
-            index_processo(proc["numero_processo"], proc)
-            total_proc += 1
+            indexados = index_processos_batch(processos)
+            total_proc += indexados
         except Exception as e:
-            logger.error(f"reindexar_tudo_task: erro ao indexar processo {proc.get('numero_processo')}: {e}")
+            logger.error(f"reindexar_tudo_task: erro ao indexar batch de processos offset={proc_offset}: {e}")
+        proc_offset += proc_batch_size
+        logger.info(f"Reindex processos: {total_proc} indexados...")
 
     logger.info(f"Reindex processos completo: {total_proc} indexados.")

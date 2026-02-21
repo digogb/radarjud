@@ -393,6 +393,36 @@ export const semanticApi = {
     },
 };
 
+// ===== Oportunidades de Crédito =====
+
+export interface OportunidadeItem {
+    id: number;
+    pessoa_id: number;
+    pessoa_nome: string;
+    tribunal: string;
+    numero_processo: string;
+    data_disponibilizacao: string;
+    orgao: string;
+    tipo_comunicacao: string;
+    texto_resumo: string;
+    texto_completo?: string;
+    link?: string;
+    padrao_detectado: string;
+    criado_em: string;
+}
+
+export const oportunidadesApi = {
+    buscar: async (params?: { dias?: number; limit?: number }): Promise<{ total: number; items: OportunidadeItem[] }> => {
+        const response = await api.get('/v1/oportunidades', { params });
+        return response.data;
+    },
+
+    varrer: async (): Promise<{ status: string }> => {
+        const response = await api.post('/v1/oportunidades/varrer');
+        return response.data;
+    },
+};
+
 export const importacaoApi = {
     importarPlanilha: async (
         arquivo: File,

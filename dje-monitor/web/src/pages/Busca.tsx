@@ -167,6 +167,7 @@ export default function Busca() {
 
   // Auto-busca ao navegar de outra página com state { nome, tribunal, autoSearch, hideMonitorar }
   useEffect(() => {
+    // 1. Navegação na mesma aba (ex: Monitorados → Busca) via router state
     const state = location.state as { nome?: string; tribunal?: string; autoSearch?: boolean; hideMonitorar?: boolean } | null
     if (state?.autoSearch && state.nome) {
       setNome(state.nome)
@@ -174,7 +175,18 @@ export default function Busca() {
       setTribunal(trib)
       if (state.hideMonitorar) setHideMonitorar(true)
       executarBusca(state.nome, trib)
-      // Limpa o state para evitar re-execução ao recarregar
+      navigate(location.pathname, { replace: true, state: {} })
+      return
+    }
+
+    // 2. Navegação em nova aba (ex: Oportunidades → Busca) via query params
+    const params = new URLSearchParams(location.search)
+    const nomeParam = params.get('nome')
+    if (nomeParam) {
+      const trib = params.get('tribunal') || 'Todos'
+      setNome(nomeParam)
+      setTribunal(trib)
+      executarBusca(nomeParam, trib)
       navigate(location.pathname, { replace: true, state: {} })
     }
   }, []) // eslint-disable-line react-hooks/exhaustive-deps
@@ -215,7 +227,10 @@ export default function Busca() {
   return (
     <div className="container py-8 max-w-5xl mx-auto animate-fadeIn">
       <header className="page-header">
-        <h1 className="page-title">
+        <h1 className="page-title" style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+          {modoBusca === 'exata'
+            ? <Search size={28} style={{ color: 'var(--primary)' }} />
+            : <Sparkles size={28} style={{ color: 'var(--accent)' }} />}
           {modoBusca === 'exata' ? 'Buscar Processo' : 'Busca Semântica'}
         </h1>
         <p className="page-subtitle">

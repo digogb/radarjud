@@ -33,12 +33,24 @@
 4. **Sistema de Alertas**
    - Alerta gerado para cada nova publicação encontrada.
    - Badge de não-lidos na interface; marcação individual ou em massa como lido.
+   - Suporte a `tipo` de alerta: `NOVA_PUBLICACAO` (padrão) e `OPORTUNIDADE_CREDITO`.
+   - Endpoint `/api/v1/alertas/nao-lidos/count` aceita filtro por `tipo`.
 
-5. **Interface Web (React SPA)**
+5. **Oportunidades de Crédito**
+   - Varredura automática (a cada ciclo de sync) e sob demanda das publicações monitoradas em busca de sinais de recebimento de valores.
+   - Padrões detectados via `ilike` no `texto_completo`: mandado de levantamento, alvará de levantamento/pagamento, expedição de precatório, precatório.
+   - Janela de varredura automática: últimos 7 dias (`criado_em`). Janela de exibição na tela: últimos 30 dias (configurável até 365).
+   - Alertas especiais `OPORTUNIDADE_CREDITO` com deduplicação por `publicacao_id`.
+   - Actor Dramatiq `varrer_oportunidades_task` (fila `manutencao`) chamado em cada ciclo do scheduler.
+   - Página dedicada **Oportunidades** com filtros, cards de resultado e drawer lateral com texto completo.
+
+6. **Interface Web (React SPA)**
+   - Todas as páginas têm ícone colorido no título (padrão visual unificado).
    - **Dashboard**: resumo estatístico (publicações, alertas não lidos, última sync).
-   - **Busca**: busca ad hoc ou semântica com resultado em cards e drawer de detalhe.
+   - **Busca**: busca ad hoc ou semântica com resultado em cards e drawer de detalhe. Aceita parâmetros via `location.state` (mesma aba) ou query string `?nome=&tribunal=` (nova aba).
    - **Monitorados**: lista de pessoas monitoradas com filtro, expansão de publicações e navegação integrada à Busca.
-   - Navegação cruzada: de uma publicação no Monitorados → Busca pré-preenchida com nome ou número do processo.
+   - **Oportunidades**: publicações agrupadas por processo; filtros dinâmicos de nome e número de processo; drawer lateral com lista de publicações em accordion; botão "Varrer agora".
+   - Navegação cruzada: Monitorados → Busca (mesma aba, router state); Oportunidades → Busca (nova aba, query params).
 
 6. **Agendamento em Dois Níveis**
    - APScheduler na API enfileira `agendar_verificacoes_task` a cada N minutos.
@@ -74,8 +86,9 @@ dje-monitor/
 │   │   ├── pages/
 │   │   │   ├── Busca.tsx           # Busca exata + semântica com drawer de detalhe
 │   │   │   ├── Monitorados.tsx     # Gestão de pessoas monitoradas
+│   │   │   ├── Oportunidades.tsx   # Oportunidades de crédito detectadas
 │   │   │   └── Dashboard.tsx       # Painel de resumo
-│   │   └── services/api.ts         # Client HTTP + semanticApi
+│   │   └── services/api.ts         # Client HTTP + semanticApi + oportunidadesApi
 │   └── nginx.conf
 ├── scripts/
 │   └── backfill_embeddings.py      # CLI para reindexar publicações no Qdrant
@@ -94,9 +107,9 @@ dje-monitor/
 | `postgres` | postgres:16-alpine | 5432 | Banco de dados principal |
 | `redis` | redis:7-alpine | 6379 | Broker de filas Dramatiq |
 | `qdrant` | qdrant/qdrant:v1.9.7 | 6333 | Vector store para busca semântica |
-| `api` | build local | 8000 | FastAPI + APScheduler |
-| `worker` | build local | — | Dramatiq (1 processo, 8 threads) |
-| `web` | build local | 80 | React SPA servida via nginx |
+| `api` | `dje-monitor-backend:latest` (build local) | 8000 | FastAPI + APScheduler |
+| `worker` | `dje-monitor-backend:latest` (imagem compartilhada com api) | — | Dramatiq (1 processo, 2 threads) |
+| `web` | build local (node:20-alpine + nginx) | 80 | React SPA servida via nginx |
 
 ### Banco de Dados (PostgreSQL)
 
@@ -104,7 +117,7 @@ dje-monitor/
 |---|---|
 | `pessoas_monitoradas` | Partes cadastradas para monitoramento |
 | `publicacoes_monitoradas` | Publicações encontradas (deduplicadas por `hash_unico`) |
-| `alertas` | Alertas de novas publicações (lido/não-lido) |
+| `alertas` | Alertas de publicações; campo `tipo` distingue `NOVA_PUBLICACAO` de `OPORTUNIDADE_CREDITO` |
 | `cpfs_monitorados` | Legado: monitoramento por CPF via PDF |
 | `diarios_processados` | Legado: controle de PDFs baixados |
 | `ocorrencias` | Legado: matches de CPF em PDFs |
@@ -124,6 +137,7 @@ dje-monitor/
 | `verificacao` | `verificar_pessoa_task` | Verifica uma pessoa específica no DJe |
 | `verificacao` | `first_check_task` | First check ao cadastrar (sem gerar alertas) |
 | `manutencao` | `desativar_expirados_task` | Desativa monitoramentos expirados |
+| `manutencao` | `varrer_oportunidades_task` | Detecta padrões de crédito e gera alertas OPORTUNIDADE_CREDITO |
 | `indexacao` | `indexar_publicacao_task` | Vetoriza e indexa publicação no Qdrant |
 | `indexacao` | `indexar_processo_task` | Vetoriza histórico de processo no Qdrant |
 | `indexacao` | `reindexar_tudo_task` | Backfill completo de todas as publicações |
@@ -158,6 +172,9 @@ APScheduler (API) — a cada DJE_MONITOR_INTERVAL_MINUTES (padrão: 30 min)
               └── Busca API DJEN → dedup por hash_unico → salva publicação → gera alerta
               └── indexar_publicacao_task.send()  ← indexação semântica automática
               └── atualiza ultimo_check e proximo_check = NOW() + intervalo_horas
+        └── varrer_oportunidades_task.send()  ← roda a cada ciclo (independente de pessoas)
+              └── buscar_oportunidades(dias=7) → ilike patterns no texto_completo
+              └── registrar_alerta(tipo=OPORTUNIDADE_CREDITO) se ainda não alertado
 ```
 
 ---
@@ -276,6 +293,8 @@ DJE_TEST_DATABASE_URL="postgresql://..." pytest tests/ -m integration
 | `GET` | `/api/v1/pessoas-monitoradas/{id}/publicacoes` | Publicações de uma pessoa |
 | `GET` | `/api/v1/alertas` | Lista alertas com filtros |
 | `POST` | `/api/v1/alertas/marcar-lidos` | Marca alertas como lidos |
+| `GET` | `/api/v1/oportunidades?dias=30&limit=50` | Lista publicações com padrões de crédito detectados |
+| `POST` | `/api/v1/oportunidades/varrer` | Dispara varredura imediata de oportunidades |
 | `POST` | `/api/v1/importar-planilha` | Import Excel de partes adversas |
 | `POST` | `/api/sync/forcar` | Força ciclo de verificação imediato |
 | `GET` | `/api/sync/status` | Status do scheduler e filas Redis |

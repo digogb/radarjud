@@ -615,18 +615,34 @@ class DiarioRepository:
 
         Se excluir_processo for fornecido, omite publicações desse processo (referência de origem).
         Retorna lista de grupos: [{numero_processo, tribunal, total, publicacoes: [...]}]
+        Ordenação: grupos e publicações em ordem decrescente de data.
         """
         import re as _re
+        from datetime import datetime
+
         proc_ref_digits = _re.sub(r"\D", "", excluir_processo) if excluir_processo else None
+
+        def _parse_data(s: str):
+            """Converte string de data (DD/MM/YYYY ou YYYY-MM-DD) para datetime."""
+            if not s:
+                return datetime.min
+            for fmt in ("%d/%m/%Y", "%Y-%m-%d", "%Y-%m-%dT%H:%M:%S"):
+                try:
+                    return datetime.strptime(s[:10], fmt[:len(s[:10].replace("-", "/").replace("/", "-"))])
+                except ValueError:
+                    pass
+            for fmt in ("%d/%m/%Y", "%Y-%m-%d"):
+                try:
+                    return datetime.strptime(s[:10], fmt)
+                except ValueError:
+                    continue
+            return datetime.min
 
         with self.get_session() as session:
             pubs = (
                 session.query(PublicacaoMonitorada)
                 .filter_by(pessoa_id=pessoa_id)
-                .order_by(
-                    PublicacaoMonitorada.data_disponibilizacao.desc(),
-                    PublicacaoMonitorada.criado_em.desc(),
-                )
+                .order_by(PublicacaoMonitorada.criado_em.desc())
                 .limit(limit)
                 .all()
             )
@@ -659,7 +675,15 @@ class DiarioRepository:
                     }
                 grupos[key]["publicacoes"].append(pub_dict)
 
-            return [
+            # Ordenar publicações dentro de cada grupo por data desc (parse DD/MM/YYYY ou YYYY-MM-DD)
+            for v in grupos.values():
+                v["publicacoes"].sort(
+                    key=lambda p: _parse_data(p["data_disponibilizacao"]),
+                    reverse=True,
+                )
+
+            # Ordenar grupos pela data da publicação mais recente
+            result = [
                 {
                     "numero_processo": v["numero_processo"],
                     "tribunal": v["tribunal"],
@@ -668,6 +692,11 @@ class DiarioRepository:
                 }
                 for v in grupos.values()
             ]
+            result.sort(
+                key=lambda g: _parse_data(g["publicacoes"][0]["data_disponibilizacao"] if g["publicacoes"] else ""),
+                reverse=True,
+            )
+            return result
 
     # ===== Alertas =====
 
@@ -754,12 +783,14 @@ class DiarioRepository:
                 for a, p, pub in rows
             ]
 
-    def contar_alertas_nao_lidos(self, pessoa_id: Optional[int] = None) -> int:
-        """Conta alertas não lidos, opcionalmente filtrando por pessoa."""
+    def contar_alertas_nao_lidos(self, pessoa_id: Optional[int] = None, tipo: Optional[str] = None) -> int:
+        """Conta alertas não lidos, opcionalmente filtrando por pessoa e/ou tipo."""
         with self.get_session() as session:
             query = session.query(func.count(Alerta.id)).filter(Alerta.lido == False)
             if pessoa_id is not None:
                 query = query.filter(Alerta.pessoa_id == pessoa_id)
+            if tipo is not None:
+                query = query.filter(Alerta.tipo == tipo)
             return query.scalar() or 0
 
     def marcar_alertas_lidos(self, ids: Optional[list[int]] = None, todos: bool = False) -> int:
@@ -827,6 +858,88 @@ class DiarioRepository:
             for a in alertas
         ]
 
+    # ===== Oportunidades de Crédito =====
+
+    def buscar_oportunidades(self, dias: int = 30, limit: int = 50) -> list[dict]:
+        """Varre publicações recentes procurando sinais de recebimento de valores."""
+        from sqlalchemy import or_, and_
+
+        since = datetime.utcnow() - timedelta(days=dias)
+
+        # Padrões de detecção no texto_completo
+        p1 = and_(
+            PublicacaoMonitorada.texto_completo.ilike('%alvará%'),
+            or_(
+                PublicacaoMonitorada.texto_completo.ilike('%levantamento%'),
+                PublicacaoMonitorada.texto_completo.ilike('%pagamento%'),
+            ),
+        )
+        p2 = PublicacaoMonitorada.texto_completo.ilike('%mandado de levantamento%')
+        p3 = or_(
+            PublicacaoMonitorada.texto_completo.ilike('%expedição de precatório%'),
+            PublicacaoMonitorada.texto_completo.ilike('%expedir precatório%'),
+            PublicacaoMonitorada.texto_completo.ilike('%precatório%'),
+        )
+
+        with self.get_session() as session:
+            rows = (
+                session.query(PublicacaoMonitorada, PessoaMonitorada)
+                .join(PessoaMonitorada, PublicacaoMonitorada.pessoa_id == PessoaMonitorada.id)
+                .filter(
+                    PessoaMonitorada.ativo == True,
+                    PublicacaoMonitorada.criado_em >= since,
+                    or_(p1, p2, p3),
+                )
+                .order_by(PublicacaoMonitorada.data_disponibilizacao.desc())
+                .limit(limit)
+                .all()
+            )
+
+            result = []
+            for pub, pessoa in rows:
+                texto = (pub.texto_completo or "").lower()
+                if "mandado de levantamento" in texto:
+                    padrao = "mandado de levantamento"
+                elif "alvará" in texto and "levantamento" in texto:
+                    padrao = "alvará de levantamento"
+                elif "alvará" in texto and "pagamento" in texto:
+                    padrao = "alvará de pagamento"
+                elif "expedição de precatório" in texto or "expedir precatório" in texto:
+                    padrao = "expedição de precatório"
+                elif "precatório" in texto:
+                    padrao = "precatório"
+                else:
+                    padrao = "sinal de recebimento"
+
+                result.append({
+                    "id": pub.id,
+                    "pessoa_id": pessoa.id,
+                    "pessoa_nome": pessoa.nome,
+                    "tribunal": pub.tribunal,
+                    "numero_processo": pub.numero_processo,
+                    "data_disponibilizacao": pub.data_disponibilizacao,
+                    "orgao": pub.orgao,
+                    "tipo_comunicacao": pub.tipo_comunicacao,
+                    "texto_resumo": pub.texto_resumo,
+                    "texto_completo": pub.texto_completo,
+                    "link": pub.link,
+                    "padrao_detectado": padrao,
+                    "criado_em": pub.criado_em.isoformat(),
+                })
+            return result
+
+    def alerta_oportunidade_existe(self, publicacao_id: int) -> bool:
+        """Verifica se já existe alerta OPORTUNIDADE_CREDITO para esta publicação (deduplicação)."""
+        with self.get_session() as session:
+            return (
+                session.query(Alerta)
+                .filter(
+                    Alerta.publicacao_id == publicacao_id,
+                    Alerta.tipo == "OPORTUNIDADE_CREDITO",
+                )
+                .first()
+            ) is not None
+
     # ===== Backfill / Reindexação Semântica =====
 
     def get_publicacoes_batch(self, offset: int = 0, limit: int = 100) -> list:
@@ -866,6 +979,37 @@ class DiarioRepository:
                 processos[key]["publicacoes"].append(pub.to_dict())
 
         return list(processos.values())
+
+    def get_distinct_processos_batch(self, offset: int = 0, limit: int = 50) -> list[str]:
+        """Retorna lista paginada de numero_processo distintos para backfill de processos."""
+        from sqlalchemy import distinct, text as sa_text
+        with self.get_session() as session:
+            rows = (
+                session.query(distinct(PublicacaoMonitorada.numero_processo))
+                .filter(PublicacaoMonitorada.numero_processo.isnot(None))
+                .order_by(PublicacaoMonitorada.numero_processo)
+                .offset(offset)
+                .limit(limit)
+                .all()
+            )
+            return [row[0] for row in rows]
+
+    def get_publicacoes_por_processo(self, numero_processo: str) -> dict | None:
+        """Retorna todas as publicações de um processo agrupadas em dict para indexação."""
+        with self.get_session() as session:
+            pubs = (
+                session.query(PublicacaoMonitorada)
+                .filter(PublicacaoMonitorada.numero_processo == numero_processo)
+                .order_by(PublicacaoMonitorada.data_disponibilizacao.desc())
+                .all()
+            )
+            if not pubs:
+                return None
+            return {
+                "numero_processo": numero_processo,
+                "tribunal": pubs[0].tribunal,
+                "publicacoes": [p.to_dict() for p in pubs],
+            }
 
     def estatisticas(self) -> dict:
         """Retorna estatísticas do sistema."""

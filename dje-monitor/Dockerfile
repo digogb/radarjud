@@ -24,11 +24,8 @@ RUN python -c "from sentence_transformers import SentenceTransformer; \
     SentenceTransformer('nomic-ai/nomic-embed-text-v1.5', trust_remote_code=True)" || \
     echo 'Aviso: pré-download do modelo falhou, será baixado no primeiro uso'
 
-# Copiar código fonte
-COPY src/ ./src/
-
-# Criar diretório de dados
-RUN mkdir -p /app/data/pdfs
+# Criar diretórios (src será montado via volume em runtime)
+RUN mkdir -p /app/data/pdfs /app/src
 
 WORKDIR /app/src
 

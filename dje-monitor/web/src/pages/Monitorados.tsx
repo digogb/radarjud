@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { Eye, EyeOff, Search, Plus, Bell, Clock, FileText, X, ChevronDown, ChevronUp, ExternalLink, Upload, CheckCircle, AlertCircle } from 'lucide-react'
-import { pessoaMonitoradaApi, alertaApi, importacaoApi, PessoaMonitorada, ProcessoGroup, ImportacaoStats } from '../services/api'
+import { pessoaMonitoradaApi, alertaApi, importacaoApi, syncApi, PessoaMonitorada, ProcessoGroup, ImportacaoStats } from '../services/api'
 
 export default function Monitorados() {
   const navigate = useNavigate()
@@ -28,6 +28,7 @@ export default function Monitorados() {
   const [importando, setImportando] = useState(false)
   const [resultadoImport, setResultadoImport] = useState<ImportacaoStats | null>(null)
   const [erroImport, setErroImport] = useState('')
+  const [sincronizarAposImportar, setSincronizarAposImportar] = useState(false)
   const fileInputRef = useRef<HTMLInputElement>(null)
 
   // Filtro de busca
@@ -154,6 +155,13 @@ export default function Monitorados() {
         setArquivoImport(null)
         setResultadoImport(null)
         await carregarPessoas()
+        if (sincronizarAposImportar) {
+          try {
+            await syncApi.forcar()
+          } catch {
+            // sync é melhor-esforço — falha silenciosa
+          }
+        }
       }
     } catch (err: any) {
       setErroImport(err.response?.data?.detail || 'Erro ao importar planilha')
@@ -178,7 +186,10 @@ export default function Monitorados() {
     <div className="animate-fadeIn">
       <header className="page-header" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
         <div>
-          <h1 className="page-title">Pessoas Monitoradas</h1>
+          <h1 className="page-title" style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+            <Eye size={28} style={{ color: 'var(--primary)' }} />
+            Pessoas Monitoradas
+          </h1>
           <p className="page-subtitle">
             Acompanhe novas publicações no DJe automaticamente
           </p>
@@ -352,22 +363,47 @@ export default function Monitorados() {
           </div>
 
           {/* Opções */}
-          <div style={{ display: 'flex', alignItems: 'center', gap: '24px', marginBottom: '16px', flexWrap: 'wrap' }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '10px', marginBottom: '16px' }}>
+            <label style={{ display: 'flex', alignItems: 'flex-start', gap: '10px', cursor: 'pointer' }}>
               <input
                 type="checkbox"
                 id="dryRun"
                 checked={dryRun}
                 onChange={e => setDryRun(e.target.checked)}
-                style={{ width: '16px', height: '16px', cursor: 'pointer' }}
+                style={{ width: '16px', height: '16px', cursor: 'pointer', marginTop: '2px', flexShrink: 0 }}
               />
-              <label htmlFor="dryRun" style={{ fontSize: '0.875rem', color: 'var(--text-secondary)', cursor: 'pointer' }}>
-                Simulação (dry-run) — valida sem gravar no banco
+              <div>
+                <span style={{ fontSize: '0.875rem', color: 'var(--text-secondary)', fontWeight: 500 }}>
+                  Apenas validar o arquivo
+                </span>
+                <span style={{ fontSize: '0.8rem', color: 'var(--text-muted)', display: 'block', marginTop: '1px' }}>
+                  Verifica erros de formatação sem importar nada
+                </span>
+              </div>
+            </label>
+
+            {!dryRun && (
+              <label style={{ display: 'flex', alignItems: 'flex-start', gap: '10px', cursor: 'pointer' }}>
+                <input
+                  type="checkbox"
+                  checked={sincronizarAposImportar}
+                  onChange={e => setSincronizarAposImportar(e.target.checked)}
+                  style={{ width: '16px', height: '16px', cursor: 'pointer', marginTop: '2px', flexShrink: 0 }}
+                />
+                <div>
+                  <span style={{ fontSize: '0.875rem', color: 'var(--text-secondary)', fontWeight: 500 }}>
+                    Sincronizar imediatamente após importar
+                  </span>
+                  <span style={{ fontSize: '0.8rem', color: 'var(--text-muted)', display: 'block', marginTop: '1px' }}>
+                    Dispara a busca de publicações para as pessoas importadas
+                  </span>
+                </div>
               </label>
-            </div>
+            )}
+
             <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
               <label style={{ fontSize: '0.875rem', color: 'var(--text-secondary)', whiteSpace: 'nowrap' }}>
-                Verificar a cada
+                Intervalo de verificação
               </label>
               <select
                 className="input-field"
@@ -375,10 +411,10 @@ export default function Monitorados() {
                 onChange={e => setIntervaloImport(Number(e.target.value))}
                 style={{ width: 'auto', padding: '4px 8px' }}
               >
-                <option value={6}>6 horas</option>
-                <option value={12}>12 horas</option>
-                <option value={24}>24 horas</option>
-                <option value={48}>48 horas</option>
+                <option value={6}>A cada 6 horas</option>
+                <option value={12}>A cada 12 horas</option>
+                <option value={24}>A cada 24 horas</option>
+                <option value={48}>A cada 48 horas</option>
               </select>
             </div>
           </div>
@@ -408,7 +444,7 @@ export default function Monitorados() {
               </div>
               {resultadoImport.dry_run && (
                 <p style={{ marginTop: '8px', color: 'var(--text-muted)', fontSize: '0.8rem' }}>
-                  Desmarque "Simulação" e clique em Importar para gravar os dados.
+                  Desmarque "Apenas validar o arquivo" e clique em Importar para gravar os dados.
                 </p>
               )}
             </div>

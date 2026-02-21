@@ -43,6 +43,7 @@ services:
 
   api:
     build: .
+    image: dje-monitor-backend:latest
     container_name: dje-monitor-api
     entrypoint: []
     command: uvicorn api:app --host 0.0.0.0 --port 8000
@@ -51,6 +52,7 @@ services:
     volumes:
       - ./data:/app/data
       - ./src:/app/src
+      - ./scripts:/app/scripts
     env_file:
       - .env
     environment:
@@ -71,6 +73,7 @@ services:
 
   worker:
     build: .
+    image: dje-monitor-backend:latest
     container_name: dje-monitor-worker
     entrypoint: []
     command: python -m dramatiq tasks --processes 1 --threads 2

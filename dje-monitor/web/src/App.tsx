@@ -1,8 +1,9 @@
 import { Routes, Route, NavLink } from 'react-router-dom'
-import { LayoutDashboard, Search, Eye, Bell, Radar } from 'lucide-react'
+import { LayoutDashboard, Search, Eye, Bell, Radar, TrendingUp } from 'lucide-react'
 import Dashboard from './pages/Dashboard'
 import Busca from './pages/Busca'
 import Monitorados from './pages/Monitorados'
+import Oportunidades from './pages/Oportunidades'
 import ProcessoDetalhe from './pages/ProcessoDetalhe'
 import './App.css'
 
@@ -12,6 +13,7 @@ function App() {
     { path: '/', icon: LayoutDashboard, label: 'Dashboard' },
     { path: '/busca', icon: Search, label: 'Buscar Processo' },
     { path: '/monitorados', icon: Eye, label: 'Pessoas Monitoradas' },
+    { path: '/oportunidades', icon: TrendingUp, label: 'Oportunidades' },
   ]
 
   return (
@@ -57,6 +59,7 @@ function App() {
           <Route path="/" element={<Dashboard />} />
           <Route path="/busca" element={<Busca />} />
           <Route path="/monitorados" element={<Monitorados />} />
+          <Route path="/oportunidades" element={<Oportunidades />} />
           <Route path="/processo/:id" element={<ProcessoDetalhe />} />
         </Routes>
       </main>

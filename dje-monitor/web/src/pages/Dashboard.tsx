@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { FileText, Eye, Bell, Clock, TrendingUp, RefreshCw, AlertCircle } from 'lucide-react'
+import { FileText, Eye, Bell, Clock, TrendingUp, RefreshCw, AlertCircle, LayoutDashboard } from 'lucide-react'
 import { dashboardApi, syncApi, DashboardResumo, AlteracaoDetectada } from '../services/api'
 import { formatDistanceToNow } from 'date-fns'
 import { ptBR } from 'date-fns/locale'
@@ -69,7 +69,10 @@ export default function Dashboard() {
     <div className="animate-fadeIn">
       <header className="page-header flex items-center justify-between">
         <div>
-          <h1 className="page-title">Dashboard</h1>
+          <h1 className="page-title" style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+            <LayoutDashboard size={28} style={{ color: 'var(--primary)' }} />
+            Dashboard
+          </h1>
           <p className="page-subtitle">Visão geral do monitoramento de processos</p>
         </div>
         <button

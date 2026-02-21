@@ -275,9 +275,12 @@ def listar_alertas(
 
 
 @app.get("/api/v1/alertas/nao-lidos/count")
-def contar_alertas_nao_lidos(pessoa_id: Optional[int] = Query(None)):
+def contar_alertas_nao_lidos(
+    pessoa_id: Optional[int] = Query(None),
+    tipo: Optional[str] = Query(None, description="Filtrar por tipo de alerta (ex: OPORTUNIDADE_CREDITO)"),
+):
     """Retorna contagem de alertas não lidos para badge."""
-    return {"count": repo.contar_alertas_nao_lidos(pessoa_id=pessoa_id)}
+    return {"count": repo.contar_alertas_nao_lidos(pessoa_id=pessoa_id, tipo=tipo)}
 
 
 @app.post("/api/v1/alertas/marcar-lidos")
@@ -438,8 +441,10 @@ def semantic_search(
     - **score_threshold**: Score mínimo de similaridade (0.0-1.0)
     - **tipo**: "publicacoes" ou "processos"
     """
+    import time as _time
     from services.embedding_service import search_publicacoes, search_processos
     from storage.models import PublicacaoMonitorada
+    _t_start = _time.perf_counter()
     try:
         # Coletar processos de referência para excluir dos resultados
         processos_referencia: set[str] = set()
@@ -530,6 +535,11 @@ def semantic_search(
             if antes != len(results):
                 logger.info(f"Busca semântica: {antes} → {len(results)} após filtro de processos referência")
 
+        _t_total = (_time.perf_counter() - _t_start) * 1000
+        logger.info(
+            f"[SEMANTIC:endpoint] tipo={tipo} resultados={len(results)} "
+            f"total={_t_total:.0f}ms"
+        )
         return {
             "query": q,
             "tipo": tipo,
@@ -539,6 +549,29 @@ def semantic_search(
     except Exception as e:
         logger.error(f"Erro na busca semântica: {e}", exc_info=True)
         raise HTTPException(status_code=503, detail=f"Serviço de busca semântica indisponível: {str(e)}")
+
+
+# ============================================================
+# Oportunidades de Crédito
+# ============================================================
+
+
+@app.get("/api/v1/oportunidades")
+def buscar_oportunidades(
+    dias: int = Query(30, ge=1, le=365, description="Janela de dias para varrer publicações"),
+    limit: int = Query(50, ge=1, le=200, description="Máximo de resultados"),
+):
+    """Lista publicações recentes com sinais de recebimento de valores (alvará, levantamento, precatório)."""
+    items = repo.buscar_oportunidades(dias=dias, limit=limit)
+    return {"total": len(items), "items": items}
+
+
+@app.post("/api/v1/oportunidades/varrer")
+def varrer_oportunidades():
+    """Dispara varredura imediata de oportunidades de crédito."""
+    from tasks import varrer_oportunidades_task
+    varrer_oportunidades_task.send()
+    return {"status": "varredura enfileirada"}
 
 
 @app.post("/api/v1/search/reindex")
