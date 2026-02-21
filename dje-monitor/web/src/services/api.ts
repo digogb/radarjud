@@ -164,6 +164,13 @@ export interface PublicacaoResumo {
     criado_em: string;
 }
 
+export interface ProcessoGroup {
+    numero_processo: string | null;
+    tribunal: string | null;
+    total: number;
+    publicacoes: PublicacaoResumo[];
+}
+
 export interface AlertaItem {
     id: number;
     pessoa_id: number;
@@ -281,7 +288,7 @@ export const pessoaMonitoradaApi = {
         await api.delete(`/v1/pessoas-monitoradas/${id}`);
     },
 
-    publicacoes: async (id: number): Promise<PublicacaoResumo[]> => {
+    publicacoes: async (id: number): Promise<ProcessoGroup[]> => {
         const response = await api.get(`/v1/pessoas-monitoradas/${id}/publicacoes`);
         return response.data;
     },

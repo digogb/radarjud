@@ -540,17 +540,29 @@ class DiarioRepository:
                 session.commit()
 
     def atualizar_total_publicacoes(self, pessoa_id: int) -> None:
-        """Atualiza contador desnormalizado de publicações."""
+        """Atualiza contador desnormalizado de publicações, excluindo o processo de referência."""
+        import re as _re
         with self.get_session() as session:
-            total = (
-                session.query(func.count(PublicacaoMonitorada.id))
-                .filter_by(pessoa_id=pessoa_id)
-                .scalar()
-            ) or 0
             p = session.get(PessoaMonitorada, pessoa_id)
-            if p:
-                p.total_publicacoes = total
-                session.commit()
+            if not p:
+                return
+
+            proc_ref_digits = _re.sub(r"\D", "", p.numero_processo or "")
+
+            # Busca todos os numero_processo das publicações desta pessoa
+            numeros = (
+                session.query(PublicacaoMonitorada.numero_processo)
+                .filter(PublicacaoMonitorada.pessoa_id == pessoa_id)
+                .all()
+            )
+
+            total = sum(
+                1 for (num,) in numeros
+                if not (proc_ref_digits and _re.sub(r"\D", "", num or "") == proc_ref_digits)
+            )
+
+            p.total_publicacoes = total
+            session.commit()
 
     # ===== Publicações Monitoradas =====
 
@@ -596,18 +608,38 @@ class DiarioRepository:
             session.expunge(pub)
             return pub
 
-    def listar_publicacoes_pessoa(self, pessoa_id: int, limit: int = 100) -> list[dict]:
-        """Lista publicações de uma pessoa monitorada."""
+    def listar_publicacoes_pessoa(
+        self, pessoa_id: int, limit: int = 100, excluir_processo: Optional[str] = None
+    ) -> list[dict]:
+        """Lista publicações de uma pessoa monitorada agrupadas por número de processo.
+
+        Se excluir_processo for fornecido, omite publicações desse processo (referência de origem).
+        Retorna lista de grupos: [{numero_processo, tribunal, total, publicacoes: [...]}]
+        """
+        import re as _re
+        proc_ref_digits = _re.sub(r"\D", "", excluir_processo) if excluir_processo else None
+
         with self.get_session() as session:
             pubs = (
                 session.query(PublicacaoMonitorada)
                 .filter_by(pessoa_id=pessoa_id)
-                .order_by(PublicacaoMonitorada.criado_em.desc())
+                .order_by(
+                    PublicacaoMonitorada.data_disponibilizacao.desc(),
+                    PublicacaoMonitorada.criado_em.desc(),
+                )
                 .limit(limit)
                 .all()
             )
-            return [
-                {
+
+            grupos: dict = {}
+            for p in pubs:
+                # Omitir publicações do processo de referência
+                if proc_ref_digits:
+                    num_digits = _re.sub(r"\D", "", p.numero_processo or "")
+                    if num_digits and num_digits == proc_ref_digits:
+                        continue
+
+                pub_dict = {
                     "id": p.id,
                     "tribunal": p.tribunal,
                     "numero_processo": p.numero_processo,
@@ -618,7 +650,23 @@ class DiarioRepository:
                     "link": p.link,
                     "criado_em": p.criado_em.isoformat(),
                 }
-                for p in pubs
+                key = p.numero_processo or "__sem_processo__"
+                if key not in grupos:
+                    grupos[key] = {
+                        "numero_processo": p.numero_processo,
+                        "tribunal": p.tribunal,
+                        "publicacoes": [],
+                    }
+                grupos[key]["publicacoes"].append(pub_dict)
+
+            return [
+                {
+                    "numero_processo": v["numero_processo"],
+                    "tribunal": v["tribunal"],
+                    "total": len(v["publicacoes"]),
+                    "publicacoes": v["publicacoes"],
+                }
+                for v in grupos.values()
             ]
 
     # ===== Alertas =====

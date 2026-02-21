@@ -9,7 +9,6 @@ Responsável por:
 """
 
 import logging
-from datetime import date
 from typing import Optional
 
 from collectors.djen_collector import DJENCollector
@@ -111,8 +110,11 @@ class MonitorService:
     def verificar_pessoa(self, pessoa: PessoaMonitorada) -> int:
         """
         Verifica uma pessoa específica buscando novas publicações.
-        Retorna quantidade de publicações novas encontradas.
+        Retorna quantidade de publicações novas encontradas (excluindo processo referência).
         """
+        import re as _re
+        proc_ref_digits = _re.sub(r"\D", "", pessoa.numero_processo or "")
+
         resultados = self._buscar(pessoa.nome, pessoa.tribunal_filtro)
         novos = 0
 
@@ -121,13 +123,18 @@ class MonitorService:
             if self.repo.publicacao_existe(hash_pub):
                 continue
 
-            # Nova publicação encontrada
+            # Salva para deduplicação futura (mesmo sendo processo referência)
             pub = self.repo.registrar_publicacao(
                 pessoa_id=pessoa.id,
                 dados=item,
                 hash_unico=hash_pub,
             )
             self._enfileirar_indexacao(pub)
+
+            # Não gerar alerta para publicações do processo de referência
+            proc_digits = _re.sub(r"\D", "", item.get("numero_processo") or item.get("processo", ""))
+            if proc_ref_digits and proc_digits == proc_ref_digits:
+                continue
 
             titulo = self._montar_titulo(item)
             descricao = self._montar_descricao(item)
@@ -147,11 +154,10 @@ class MonitorService:
         return novos
 
     def _buscar(self, nome: str, tribunal_filtro: Optional[str] = None) -> list[dict]:
-        """Executa busca na API DJEN e retorna resultados normalizados."""
-        hoje = date.today()
+        """Executa busca na API DJEN e retorna resultados normalizados (todos os registros)."""
         try:
             resultados = self.collector.buscar_por_nome(
-                nome, hoje, hoje, max_paginas=self.config.monitor_max_paginas
+                nome, max_paginas=self.config.monitor_max_paginas
             )
         except Exception as e:
             logger.error(f"Erro na busca DJEN para '{nome}': {e}")
@@ -194,12 +200,41 @@ class MonitorService:
         return "\n".join(linhas)
 
     def _enfileirar_indexacao(self, pub) -> None:
-        """Enfileira vetorização assíncrona da publicação no Qdrant."""
+        """Enfileira vetorização assíncrona da publicação e do processo no Qdrant."""
         try:
-            from tasks import indexar_publicacao_task
-            indexar_publicacao_task.send(pub.id, pub.to_dict())
+            from tasks import indexar_publicacao_task, indexar_processo_task
+            pub_dict = pub.to_dict()
+            indexar_publicacao_task.send(pub.id, pub_dict)
+
+            # Indexar o processo com histórico atualizado
+            if pub.numero_processo:
+                processo_data = self._montar_processo_data(pub.numero_processo)
+                if processo_data:
+                    indexar_processo_task.send(pub.numero_processo, processo_data)
         except Exception as e:
             logger.warning(f"Não foi possível enfileirar indexação da pub {pub.id}: {e}")
+
+    def _montar_processo_data(self, numero_processo: str) -> dict | None:
+        """Monta dict do processo com todas suas publicações para indexação semântica."""
+        try:
+            from storage.models import PublicacaoMonitorada as _PM
+            with self.repo.get_session() as session:
+                pubs = (
+                    session.query(_PM)
+                    .filter(_PM.numero_processo == numero_processo)
+                    .order_by(_PM.data_disponibilizacao.desc())
+                    .all()
+                )
+                if not pubs:
+                    return None
+                return {
+                    "numero_processo": numero_processo,
+                    "tribunal": pubs[0].tribunal,
+                    "publicacoes": [p.to_dict() for p in pubs],
+                }
+        except Exception as e:
+            logger.warning(f"Não foi possível montar dados do processo {numero_processo}: {e}")
+            return None
 
     def _notificar(self, pessoa: PessoaMonitorada, item: dict, alerta_id: int) -> None:
         """Envia notificações externas (Telegram/Email) para uma nova publicação."""

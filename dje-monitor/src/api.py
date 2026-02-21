@@ -2,7 +2,6 @@ from fastapi import FastAPI, Query, HTTPException, BackgroundTasks, UploadFile, 
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import List, Optional, Any
-from datetime import date
 import logging
 import re
 import sys
@@ -116,8 +115,7 @@ async def search_name(
     """Busca comunicações no DJEN pelo nome da parte."""
     logger.info(f"Recebida busca por nome: {nome}")
     try:
-        hoje = date.today()
-        resultados = collector.buscar_por_nome(nome, hoje, hoje)
+        resultados = collector.buscar_por_nome(nome)
         resultados = [
             r for r in resultados
             if not (r.get("siglaTribunal") or r.get("tribunal", "")).upper().startswith("TRF")
@@ -233,11 +231,18 @@ def desativar_pessoa(pessoa_id: int):
 
 @app.get("/api/v1/pessoas-monitoradas/{pessoa_id}/publicacoes")
 def listar_publicacoes_pessoa(pessoa_id: int, limit: int = Query(100, le=500)):
-    """Lista publicações encontradas para uma pessoa monitorada."""
+    """Lista publicações encontradas para uma pessoa monitorada, agrupadas por processo.
+
+    O processo de referência (numero_processo da pessoa) é excluído da listagem —
+    ele aparece apenas no cabeçalho da pessoa monitorada.
+    """
     pessoa = repo.obter_pessoa(pessoa_id)
     if not pessoa:
         raise HTTPException(status_code=404, detail="Pessoa não encontrada")
-    return repo.listar_publicacoes_pessoa(pessoa_id, limit=limit)
+    processo_referencia = pessoa.get("numero_processo")
+    return repo.listar_publicacoes_pessoa(
+        pessoa_id, limit=limit, excluir_processo=processo_referencia
+    )
 
 
 @app.get("/api/v1/pessoas-monitoradas/{pessoa_id}/alertas")
@@ -311,6 +316,7 @@ def dashboard_stats_tribunais():
 # ============================================================
 # Sync
 # ============================================================
+
 
 @app.post("/api/sync/forcar")
 def forcar_sync():
@@ -435,6 +441,23 @@ def semantic_search(
     from services.embedding_service import search_publicacoes, search_processos
     from storage.models import PublicacaoMonitorada
     try:
+        # Coletar processos de referência para excluir dos resultados
+        processos_referencia: set[str] = set()
+        try:
+            from storage.models import PessoaMonitorada as _PessoaModel
+            with repo.get_session() as session:
+                procs = (
+                    session.query(_PessoaModel.numero_processo)
+                    .filter(_PessoaModel.ativo == True, _PessoaModel.numero_processo != None)
+                    .all()
+                )
+                for (proc,) in procs:
+                    digits = re.sub(r"\D", "", proc)
+                    if digits:
+                        processos_referencia.add(digits)
+        except Exception as e_ref:
+            logger.warning(f"Não foi possível buscar processos referência para filtro semântico: {e_ref}")
+
         if tipo == "processos":
             results = search_processos(
                 query=q, tribunal=tribunal,
@@ -496,6 +519,17 @@ def semantic_search(
                         r["numero_processo"] = full.get("numero_processo", "")
                         r["tribunal"] = full.get("tribunal", "")
                         r["tipo_comunicacao"] = full.get("tipo_comunicacao", "")
+        # Filtrar processos de referência dos resultados
+        if processos_referencia:
+            campo = "numero_processo"
+            antes = len(results)
+            results = [
+                r for r in results
+                if re.sub(r"\D", "", r.get(campo, "")) not in processos_referencia
+            ]
+            if antes != len(results):
+                logger.info(f"Busca semântica: {antes} → {len(results)} após filtro de processos referência")
+
         return {
             "query": q,
             "tipo": tipo,

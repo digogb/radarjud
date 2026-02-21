@@ -93,27 +93,25 @@ class DJENCollector(BaseCollector):
         return items
 
     def buscar_por_termo(
-        self, termo: str, data_inicio: date, data_fim: date
+        self, termo: str, data_inicio: date = None, data_fim: date = None
     ) -> list[dict]:
         """Implementação do método abstrato - Alias para buscar_por_nome."""
-        return self.buscar_por_nome(termo, data_inicio, data_fim)
+        return self.buscar_por_nome(termo)
 
     def buscar_por_termo(
-        self, termo: str, data_inicio: date, data_fim: date
+        self, termo: str, data_inicio: date = None, data_fim: date = None
     ) -> list[dict]:
         """Implementação do método abstrato - Alias para buscar_por_nome."""
-        return self.buscar_por_nome(termo, data_inicio, data_fim)
+        return self.buscar_por_nome(termo)
 
     def buscar_por_nome(
-        self, nome: str, data_inicio: date, data_fim: date, max_paginas: int = 50
+        self, nome: str, data_inicio: date = None, data_fim: date = None, max_paginas: int = 50
     ) -> list[dict]:
         """
         Busca comunicações no DJEN pelo Nome da Parte ou Número do Processo.
-        Retorna lista de resultados estruturados.
+        Retorna todos os registros disponíveis (sem filtro de data).
         """
-        logger.info(
-            f"Buscando '{nome}' no DJEN ({data_inicio} a {data_fim}) - Máx {max_paginas} págs"
-        )
+        logger.info(f"Buscando '{nome}' no DJEN - Máx {max_paginas} págs")
         resultados = []
 
         # Detecção simples de número de processo (CNJ ou apenas números longos)
@@ -180,31 +178,34 @@ class DJENCollector(BaseCollector):
                 logger.warning(f"Erro na API direta ({self.API_URL}): {e}")
                 break
 
-        # Deduplicar por número de processo mantendo apenas a publicação mais recente.
-        # Um processo pode aparecer em múltiplas seções/órgãos do DJe no mesmo dia.
+        # Deduplicar por (processo, data_disponibilizacao) para evitar duplicatas quando
+        # o mesmo processo aparece em múltiplas seções/órgãos do DJe no mesmo dia.
+        # Publicações do mesmo processo em DATAS DIFERENTES são eventos distintos e devem
+        # ser preservadas (ex: 5 intimações ao longo dos meses no mesmo processo).
         def _parse_data(r: dict) -> str:
             """Retorna data no formato YYYY-MM-DD para ordenação; string vazia se inválida."""
             raw = r.get("data_disponibilizacao", "")
             if not raw:
                 return ""
-            # Formato DD/MM/YYYY → YYYY-MM-DD
             partes = raw.split("/")
             if len(partes) == 3:
                 return f"{partes[2]}-{partes[1]}-{partes[0]}"
-            return raw  # já está em YYYY-MM-DD ou similar
+            return raw
 
-        por_processo: dict = {}
+        por_processo_data: dict = {}
         sem_numero = []
         for r in resultados:
             proc = re.sub(r"\D", "", r.get("processo", ""))
             if not proc:
                 sem_numero.append(r)
                 continue
-            existente = por_processo.get(proc)
+            data = r.get("data_disponibilizacao", "")
+            key = f"{proc}|{data}"
+            existente = por_processo_data.get(key)
             if existente is None or _parse_data(r) >= _parse_data(existente):
-                por_processo[proc] = r
+                por_processo_data[key] = r
 
-        return list(por_processo.values()) + sem_numero
+        return list(por_processo_data.values()) + sem_numero
 
 
 

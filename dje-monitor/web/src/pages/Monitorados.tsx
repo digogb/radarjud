@@ -1,14 +1,14 @@
 import { useState, useEffect, useRef } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { Eye, EyeOff, Search, Plus, Bell, Clock, FileText, X, ChevronDown, ChevronUp, ExternalLink, Upload, CheckCircle, AlertCircle } from 'lucide-react'
-import { pessoaMonitoradaApi, alertaApi, importacaoApi, PessoaMonitorada, PublicacaoResumo, ImportacaoStats } from '../services/api'
+import { pessoaMonitoradaApi, alertaApi, importacaoApi, PessoaMonitorada, ProcessoGroup, ImportacaoStats } from '../services/api'
 
 export default function Monitorados() {
   const navigate = useNavigate()
   const [pessoas, setPessoas] = useState<PessoaMonitorada[]>([])
   const [loading, setLoading] = useState(true)
   const [pessoaExpandida, setPessoaExpandida] = useState<number | null>(null)
-  const [publicacoes, setPublicacoes] = useState<Record<number, PublicacaoResumo[]>>({})
+  const [publicacoes, setPublicacoes] = useState<Record<number, ProcessoGroup[]>>({})
   const [loadingPublicacoes, setLoadingPublicacoes] = useState<Record<number, boolean>>({})
 
   // Formulário para adicionar pessoa
@@ -598,60 +598,69 @@ export default function Monitorados() {
                         <p style={{ fontSize: '0.8rem' }}>O sistema verificará no próximo ciclo.</p>
                       </div>
                     ) : (
-                      <ul style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
-                        {(publicacoes[pessoa.id] || []).map(pub => (
-                          <li key={pub.id} style={{ background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: '8px', padding: '12px 16px' }}>
-                            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: '8px', marginBottom: '4px' }}>
-                              <div style={{ display: 'flex', gap: '8px', alignItems: 'center', flexWrap: 'wrap' }}>
-                                {pub.tribunal && (
-                                  <span className="processo-tribunal" style={{ fontSize: '0.7rem' }}>{pub.tribunal}</span>
-                                )}
-                                {pub.tipo_comunicacao && (
-                                  <span style={{ fontSize: '0.7rem', background: 'rgba(99,102,241,0.1)', color: 'var(--primary)', padding: '2px 8px', borderRadius: '4px', fontWeight: 600 }}>
-                                    {pub.tipo_comunicacao}
-                                  </span>
-                                )}
-                                {pub.numero_processo && (
-                                  <span style={{ fontSize: '0.8rem', fontWeight: 600, color: 'var(--text-primary)' }}>{pub.numero_processo}</span>
-                                )}
-                              </div>
-                              <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
-                                <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)', whiteSpace: 'nowrap' }}>
-                                  {pub.data_disponibilizacao}
-                                </span>
-                                {pub.link && (
-                                  <a href={pub.link} target="_blank" rel="noreferrer" style={{ color: 'var(--text-muted)' }} title="Ver documento original">
-                                    <FileText size={13} />
-                                  </a>
-                                )}
-                                {pub.numero_processo && (
-                                  <button
-                                    onClick={() => navigate('/busca', {
-                                      state: {
-                                        nome: pub.numero_processo,
-                                        autoSearch: true,
-                                        hideMonitorar: true,
-                                      }
-                                    })}
-                                    style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--primary)', display: 'flex', alignItems: 'center', padding: 0 }}
-                                    title="Consultar processo no DJe"
-                                  >
-                                    <ExternalLink size={13} />
-                                  </button>
-                                )}
-                              </div>
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
+                        {(publicacoes[pessoa.id] || []).map((grupo, gi) => (
+                          <div key={grupo.numero_processo || `grupo-${gi}`}>
+                            {/* Cabeçalho do grupo de processo */}
+                            <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '8px' }}>
+                              <span style={{ fontFamily: 'monospace', fontSize: '0.82rem', fontWeight: 700, color: 'var(--text-primary)' }}>
+                                {grupo.numero_processo || 'Sem processo'}
+                              </span>
+                              {grupo.tribunal && (
+                                <span className="processo-tribunal" style={{ fontSize: '0.7rem' }}>{grupo.tribunal}</span>
+                              )}
+                              <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>
+                                {grupo.total} publicação(ões)
+                              </span>
+                              {grupo.numero_processo && (
+                                <button
+                                  onClick={() => navigate('/busca', {
+                                    state: { nome: grupo.numero_processo, autoSearch: true, hideMonitorar: true }
+                                  })}
+                                  style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--primary)', display: 'flex', alignItems: 'center', padding: 0 }}
+                                  title="Consultar processo no DJe"
+                                >
+                                  <ExternalLink size={13} />
+                                </button>
+                              )}
                             </div>
-                            {pub.orgao && (
-                              <p style={{ fontSize: '0.78rem', color: 'var(--text-muted)', margin: '4px 0' }}>{pub.orgao}</p>
-                            )}
-                            {pub.texto_resumo && (
-                              <p style={{ fontSize: '0.82rem', color: 'var(--text-secondary)', lineHeight: 1.6, marginTop: '6px' }}>
-                                {pub.texto_resumo}
-                              </p>
-                            )}
-                          </li>
+                            {/* Publicações do grupo */}
+                            <ul style={{ display: 'flex', flexDirection: 'column', gap: '8px', paddingLeft: '12px', borderLeft: '2px solid var(--border)' }}>
+                              {grupo.publicacoes.map(pub => (
+                                <li key={pub.id} style={{ background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: '8px', padding: '10px 14px' }}>
+                                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: '8px', marginBottom: '4px' }}>
+                                    <div style={{ display: 'flex', gap: '6px', alignItems: 'center', flexWrap: 'wrap' }}>
+                                      {pub.tipo_comunicacao && (
+                                        <span style={{ fontSize: '0.7rem', background: 'rgba(99,102,241,0.1)', color: 'var(--primary)', padding: '2px 8px', borderRadius: '4px', fontWeight: 600 }}>
+                                          {pub.tipo_comunicacao}
+                                        </span>
+                                      )}
+                                    </div>
+                                    <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+                                      <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)', whiteSpace: 'nowrap' }}>
+                                        {pub.data_disponibilizacao}
+                                      </span>
+                                      {pub.link && (
+                                        <a href={pub.link} target="_blank" rel="noreferrer" style={{ color: 'var(--text-muted)' }} title="Ver documento original">
+                                          <FileText size={13} />
+                                        </a>
+                                      )}
+                                    </div>
+                                  </div>
+                                  {pub.orgao && (
+                                    <p style={{ fontSize: '0.78rem', color: 'var(--text-muted)', margin: '4px 0' }}>{pub.orgao}</p>
+                                  )}
+                                  {pub.texto_resumo && (
+                                    <p style={{ fontSize: '0.82rem', color: 'var(--text-secondary)', lineHeight: 1.6, marginTop: '6px' }}>
+                                      {pub.texto_resumo}
+                                    </p>
+                                  )}
+                                </li>
+                              ))}
+                            </ul>
+                          </div>
                         ))}
-                      </ul>
+                      </div>
                     )}
                   </div>
                 )}

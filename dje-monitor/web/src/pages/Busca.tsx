@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from 'react'
+import { useState, useEffect, useRef, useMemo } from 'react'
 import { createPortal } from 'react-dom'
 import { useNavigate, useLocation } from 'react-router-dom'
 import { Search, FileText, Eye, EyeOff, AlertCircle, X, Calendar, Building, Users, Scale, ExternalLink, Bell, Check, Sparkles } from 'lucide-react'
@@ -17,6 +17,25 @@ export default function Busca() {
   const [monitoradoSucesso, setMonitoradoSucesso] = useState(false)
   const [ultimoTermoBuscado, setUltimoTermoBuscado] = useState('')
   const [hideMonitorar, setHideMonitorar] = useState(false)
+
+  // Agrupa resultados da busca exata por processo, ordenando publicações por data desc
+  const resultadosAgrupados = useMemo(() => {
+    const parseDate = (d?: string) => {
+      if (!d) return 0
+      const p = d.split('/')
+      return p.length === 3 ? new Date(`${p[2]}-${p[1]}-${p[0]}`).getTime() : 0
+    }
+    const map: Record<string, any[]> = {}
+    for (const item of resultados) {
+      const key = item.processo || item.numero_processo || '__sem_proc__'
+      if (!map[key]) map[key] = []
+      map[key].push(item)
+    }
+    return Object.entries(map).map(([proc, pubs]) => {
+      const sorted = [...pubs].sort((a, b) => parseDate(b.data_disponibilizacao) - parseDate(a.data_disponibilizacao))
+      return { processo: proc === '__sem_proc__' ? '' : proc, publicacoes: sorted, latest: sorted[0] }
+    })
+  }, [resultados])
 
   // Modo de busca unificado: exata | sem-publicacoes | sem-processos
   const [modoBusca, setModoBuscaRaw] = useState<'exata' | 'sem-publicacoes' | 'sem-processos'>('exata')
@@ -314,7 +333,7 @@ export default function Busca() {
                  <h2 className="results-title">Resultados da Busca</h2>
             </div>
             <span className="results-count bg-surface border border-border px-3 py-1 rounded-full text-xs font-medium">
-                {resultados.length} registos encontrados
+                {resultadosAgrupados.length} processo(s) encontrado(s)
             </span>
           </div>
 
@@ -355,7 +374,7 @@ export default function Busca() {
               <div className="spinner" />
               <span className="loading-text">Buscando...</span>
             </div>
-          ) : resultados.length === 0 ? (
+          ) : resultadosAgrupados.length === 0 ? (
             <div className="empty-state">
               <div className="empty-icon">
                 <FileText size={32} />
@@ -367,8 +386,8 @@ export default function Busca() {
             </div>
           ) : (
             <ul className="processo-list">
-              {resultados.map((item: any, idx: number) => (
-                <ResultadoItem key={item.id || idx} item={item} onBuscaProcesso={handleProcessoClick} />
+              {resultadosAgrupados.map((grupo, idx) => (
+                <ResultadoItem key={grupo.processo || idx} grupo={grupo} onBuscaProcesso={handleProcessoClick} />
               ))}
             </ul>
           )}
@@ -847,160 +866,90 @@ function SemanticResultItem({ item, tipo, onBuscaProcesso }: {
     );
 }
 
-// Componente legado para lista principal
-function ResultadoItem({ item, onBuscaProcesso }: { item: any; key?: string | number; onBuscaProcesso: (proc: string) => void }) {
-    const [expandido, setExpandido] = useState(false);
-    const texto = item.texto || "";
-    const numProcesso = item.processo || item.numeroProcesso || item.numero_processo;
-    
+// Componente de resultado agrupado por processo
+function ResultadoItem({ grupo, onBuscaProcesso }: {
+    grupo: { processo: string; publicacoes: any[]; latest: any };
+    key?: string | number;
+    onBuscaProcesso: (proc: string) => void;
+}) {
+    const [expandido, setExpandido] = useState(false)
+    const { processo, publicacoes, latest } = grupo
+    const texto = latest.texto || ""
+    const polos = latest.polos || {}
+    const temPolos = polos.ativo?.length > 0 || polos.passivo?.length > 0 || polos.outros?.length > 0
+
     return (
         <li className="processo-item">
+            {/* Cabeçalho: tribunal + número do processo + data mais recente */}
             <div className="processo-header">
                 <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
-                    <span className="processo-tribunal">{item.tribunal}</span>
-                    <button 
-                        onClick={(e) => {
-                            e.stopPropagation();
-                            console.log("🔘 Botão processo clicado. Valor:", numProcesso); 
-                            if(numProcesso) onBuscaProcesso(numProcesso);
-                        }}
-                        className="processo-numero" 
-                        style={{ 
-                            fontSize: '1.1rem', 
-                            background: 'none', 
-                            border: 'none', 
-                            padding: 0, 
-                            cursor: 'pointer',
-                            color: 'var(--primary)',
-                            textDecoration: 'none',
-                            fontWeight: 600
-                        }}
+                    <span className="processo-tribunal">{latest.tribunal}</span>
+                    <button
+                        onClick={(e) => { e.stopPropagation(); if (processo) onBuscaProcesso(processo) }}
+                        className="processo-numero"
+                        style={{ fontSize: '1.1rem', background: 'none', border: 'none', padding: 0, cursor: 'pointer', color: 'var(--primary)', fontWeight: 600 }}
                         onMouseEnter={(e) => e.currentTarget.style.textDecoration = 'underline'}
                         onMouseLeave={(e) => e.currentTarget.style.textDecoration = 'none'}
-                        title="Buscar histórico deste processo"
+                        title="Ver histórico completo do processo"
                     >
-                        {numProcesso || "S/N"}
+                        {processo || 'S/N'}
                     </button>
+                    {publicacoes.length > 1 && (
+                        <span style={{ fontSize: '0.72rem', background: 'rgba(99,102,241,0.12)', color: 'var(--primary)', padding: '2px 8px', borderRadius: '12px', fontWeight: 600 }}>
+                            {publicacoes.length} publicações
+                        </span>
+                    )}
                 </div>
-                <div className="text-sm text-muted">
-                    {item.data_disponibilizacao}
-                </div>
+                <div className="text-sm text-muted">{latest.data_disponibilizacao}</div>
             </div>
 
-            <div className="processo-info" style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
-                <div className="processo-info-item">
-                    <span className="processo-info-label">Órgão / Tipo</span>
-                    <span className="processo-info-value" style={{ fontWeight: 500 }}>
-                        {item.orgao} {item.tipo_comunicacao ? `• ${item.tipo_comunicacao}` : ''}
-                    </span>
-                </div>
+            {/* Info: órgão + tipo */}
+            <div className="processo-info" style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+                {latest.orgao && (
+                    <div className="processo-info-item">
+                        <span className="processo-info-label">Órgão / Tipo</span>
+                        <span className="processo-info-value" style={{ fontWeight: 500 }}>
+                            {latest.orgao}{latest.tipo_comunicacao ? ` • ${latest.tipo_comunicacao}` : ''}
+                        </span>
+                    </div>
+                )}
 
-                {/* Exibição Estruturada de Polos ou Lista Simples */}
-                {(item.polos && (item.polos.ativo?.length > 0 || item.polos.passivo?.length > 0 || item.polos.outros?.length > 0)) ? (
-                    <div className="processo-partes" style={{ marginTop: '0', display: 'flex', flexWrap: 'wrap', gap: '8px', alignItems: 'center' }}>
-                        {item.polos.ativo?.length > 0 && (
-                            item.polos.ativo.map((parte: string, i: number) => (
-                                <span key={`ativo-${i}`} className="parte-tag" style={{ 
-                                    fontSize: '0.75rem', 
-                                    background: 'rgba(16, 185, 129, 0.1)', 
-                                    color: '#059669', 
-                                    border: '1px solid rgba(16, 185, 129, 0.2)' 
-                                }}>{parte}</span>
-                            ))
-                        )}
-                        
-                        {(item.polos.ativo?.length > 0 && item.polos.passivo?.length > 0) && (
+                {/* Polos */}
+                {temPolos && (
+                    <div className="processo-partes" style={{ display: 'flex', flexWrap: 'wrap', gap: '8px', alignItems: 'center' }}>
+                        {polos.ativo?.map((parte: string, i: number) => (
+                            <span key={`a${i}`} className="parte-tag" style={{ fontSize: '0.75rem', background: 'rgba(16,185,129,0.1)', color: '#059669', border: '1px solid rgba(16,185,129,0.2)' }}>{parte}</span>
+                        ))}
+                        {polos.ativo?.length > 0 && polos.passivo?.length > 0 && (
                             <span className="text-muted text-xs font-semibold mx-1">vs</span>
                         )}
-
-                        {item.polos.passivo?.length > 0 && (
-                            item.polos.passivo.map((parte: string, i: number) => (
-                                <span key={`passivo-${i}`} className="parte-tag" style={{ 
-                                    fontSize: '0.75rem', 
-                                    background: 'rgba(239, 68, 68, 0.1)', 
-                                    color: '#dc2626', 
-                                    border: '1px solid rgba(239, 68, 68, 0.2)' 
-                                }}>{parte}</span>
-                            ))
-                        )}
-
-                        {item.polos.outros?.length > 0 && (
-                            <>
-                                {((item.polos.ativo?.length > 0 || item.polos.passivo?.length > 0)) && <span className="text-muted text-xs mx-1">•</span>}
-                                {item.polos.outros.map((parte: string, i: number) => (
-                                    <span key={`outros-${i}`} className="parte-tag" style={{ fontSize: '0.75rem' }}>{parte}</span>
-                                ))}
-                            </>
-                        )}
+                        {polos.passivo?.map((parte: string, i: number) => (
+                            <span key={`p${i}`} className="parte-tag" style={{ fontSize: '0.75rem', background: 'rgba(239,68,68,0.1)', color: '#dc2626', border: '1px solid rgba(239,68,68,0.2)' }}>{parte}</span>
+                        ))}
+                        {polos.outros?.map((parte: string, i: number) => (
+                            <span key={`o${i}`} className="parte-tag" style={{ fontSize: '0.75rem' }}>{parte}</span>
+                        ))}
                     </div>
-                ) : (
-                    /* Fallback para lista simples antiga */
-                    item.partes && item.partes.length > 0 && (
-                        <div className="processo-partes" style={{ marginTop: '0' }}>
-                            {item.partes.map((parte: string, i: number) => (
-                                <span key={i} className="parte-tag" style={{ fontSize: '0.7rem' }}>{parte}</span>
-                            ))}
-                        </div>
-                    )
                 )}
-                
-                <div className="processo-info-item" style={{ 
-                    marginTop: '4px', 
-                    background: 'var(--surface)', 
-                    padding: '12px', 
-                    borderRadius: '8px',
-                    border: '1px solid var(--border)'
-                }}>
-                    <div style={{ display: 'flex', alignItems: 'center' }}>
-                        <button 
-                            onClick={() => setExpandido(!expandido)}
-                            className="btn btn-ghost btn-sm"
-                            style={{ 
-                                padding: '0', 
-                                fontSize: '0.85rem',
-                                color: 'var(--primary)',
-                                display: 'flex',
-                                alignItems: 'center',
-                                gap: '6px',
-                                background: 'transparent',
-                                border: 'none',
-                                cursor: 'pointer',
-                                fontWeight: 500
-                            }}
-                        >
-                            {expandido ? (
-                                <>
-                                    <EyeOff size={16} />
-                                    Ocultar conteúdo da publicação
-                                </>
-                            ) : (
-                                <>
-                                    <Eye size={16} />
-                                    Ler conteúdo da publicação
-                                </>
-                            )}
-                        </button>
-                    </div>
-                    
+
+                {/* Publicação mais recente (expandível) */}
+                <div style={{ background: 'var(--surface)', padding: '12px', borderRadius: '8px', border: '1px solid var(--border)' }}>
+                    <button
+                        onClick={() => setExpandido(!expandido)}
+                        className="btn btn-ghost btn-sm"
+                        style={{ padding: 0, fontSize: '0.85rem', color: 'var(--primary)', display: 'flex', alignItems: 'center', gap: '6px', background: 'transparent', border: 'none', cursor: 'pointer', fontWeight: 500 }}
+                    >
+                        {expandido ? <><EyeOff size={16} />Ocultar publicação mais recente</> : <><Eye size={16} />Ler publicação mais recente</>}
+                    </button>
+
                     {expandido && (
-                        <div className="animate-fadeIn">
-                            <p className="processo-info-value" style={{ 
-                                whiteSpace: 'pre-wrap', 
-                                fontSize: '0.9rem',
-                                color: 'var(--text-secondary)',
-                                lineHeight: '1.6',
-                                fontFamily: 'Inter, sans-serif',
-                                marginTop: '12px',
-                                padding: '8px',
-                                background: 'var(--background)',
-                                borderRadius: '4px'
-                            }}>
+                        <div className="animate-fadeIn" style={{ marginTop: '12px' }}>
+                            <p style={{ whiteSpace: 'pre-wrap', fontSize: '0.9rem', color: 'var(--text-secondary)', lineHeight: '1.6', fontFamily: 'Inter, sans-serif', padding: '8px', background: 'var(--background)', borderRadius: '4px', margin: 0 }}>
                                 {texto}
                             </p>
-                            
-                            {item.link && (
+                            {latest.link && (
                                 <div style={{ marginTop: '8px', display: 'flex', justifyContent: 'flex-end' }}>
-                                    <a href={item.link} target="_blank" rel="noreferrer" className="text-primary text-xs hover:underline flex items-center gap-1">
+                                    <a href={latest.link} target="_blank" rel="noreferrer" className="text-primary text-xs hover:underline flex items-center gap-1">
                                         <FileText size={12} />
                                         Ver Documento Original
                                     </a>
@@ -1011,5 +960,5 @@ function ResultadoItem({ item, onBuscaProcesso }: { item: any; key?: string | nu
                 </div>
             </div>
         </li>
-    );
+    )
 }
