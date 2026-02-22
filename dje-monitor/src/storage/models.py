@@ -197,6 +197,23 @@ class PublicacaoMonitorada(Base):
         return f"<PublicacaoMonitorada(processo='{self.numero_processo}', tribunal='{self.tribunal}')>"
 
 
+class PadraoOportunidade(Base):
+    """Padrão de detecção de oportunidades de crédito configurável pelo cliente."""
+
+    __tablename__ = "padroes_oportunidade"
+
+    id = Column(Integer, primary_key=True)
+    nome = Column(String(100), nullable=False)       # label exibido na UI (ex: "Alvará de Levantamento")
+    expressao = Column(String(200), nullable=False)  # frase buscada via ILIKE (ex: "alvará de levantamento")
+    tipo = Column(String(20), nullable=False, default='positivo')  # 'positivo' ou 'negativo'
+    ativo = Column(Boolean, default=True)
+    ordem = Column(Integer, nullable=True)           # prioridade de detecção (menor = maior prioridade)
+    criado_em = Column(DateTime, default=datetime.utcnow)
+
+    def __repr__(self):
+        return f"<PadraoOportunidade(nome='{self.nome}', expressao='{self.expressao}', ativo={self.ativo})>"
+
+
 class Alerta(Base):
     """Alerta gerado quando uma nova publicação é encontrada para uma pessoa monitorada."""
 

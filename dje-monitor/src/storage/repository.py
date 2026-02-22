@@ -13,7 +13,7 @@ from typing import Optional
 from sqlalchemy import create_engine, func
 from sqlalchemy.orm import Session, sessionmaker, joinedload
 
-from .models import Base, CPFMonitorado, DiarioProcessado, Ocorrencia, PessoaMonitorada, PublicacaoMonitorada, Alerta
+from .models import Base, CPFMonitorado, DiarioProcessado, Ocorrencia, PessoaMonitorada, PublicacaoMonitorada, Alerta, PadraoOportunidade
 
 logger = logging.getLogger(__name__)
 
@@ -861,51 +861,41 @@ class DiarioRepository:
     # ===== Oportunidades de Crédito =====
 
     def buscar_oportunidades(self, dias: int = 30, limit: int = 50) -> list[dict]:
-        """Varre publicações recentes procurando sinais de recebimento de valores."""
-        from sqlalchemy import or_, and_
+        """Varre publicações recentes procurando sinais de recebimento de valores.
+
+        Padrões positivos e negativos são carregados dinamicamente da tabela padroes_oportunidade.
+        Processos com publicação posterior contendo padrão negativo ativo são excluídos do resultado.
+        """
+        from sqlalchemy import or_
 
         since = datetime.utcnow() - timedelta(days=dias)
 
-        # Padrões de detecção no texto_completo
-        p1 = and_(
-            PublicacaoMonitorada.texto_completo.ilike('%alvará%'),
-            or_(
-                PublicacaoMonitorada.texto_completo.ilike('%levantamento%'),
-                PublicacaoMonitorada.texto_completo.ilike('%pagamento%'),
-            ),
-        )
-        p2 = PublicacaoMonitorada.texto_completo.ilike('%mandado de levantamento%')
-        p3 = or_(
-            PublicacaoMonitorada.texto_completo.ilike('%expedição de precatório%'),
-            PublicacaoMonitorada.texto_completo.ilike('%expedir precatório%'),
-            PublicacaoMonitorada.texto_completo.ilike('%precatório%'),
-        )
-        p4 = or_(
-            PublicacaoMonitorada.texto_completo.ilike('%requisição de pequeno valor%'),
-            and_(
-                PublicacaoMonitorada.texto_completo.ilike('%RPV%'),
-                PublicacaoMonitorada.texto_completo.ilike('%expedir%'),
-            ),
-        )
-        p5 = or_(
-            PublicacaoMonitorada.texto_completo.ilike('%homologação de acordo%'),
-            PublicacaoMonitorada.texto_completo.ilike('%acordo homologado%'),
-        )
-        p6 = or_(
-            PublicacaoMonitorada.texto_completo.ilike('%desbloqueio%'),
-            PublicacaoMonitorada.texto_completo.ilike('%levantamento do bloqueio%'),
-            PublicacaoMonitorada.texto_completo.ilike('%bloqueio levantado%'),
-        )
-        p7 = PublicacaoMonitorada.texto_completo.ilike('%ordem de pagamento%')
-
         with self.get_session() as session:
+            todos_padroes = (
+                session.query(PadraoOportunidade)
+                .filter(PadraoOportunidade.ativo == True)
+                .order_by(PadraoOportunidade.ordem.nullslast(), PadraoOportunidade.id)
+                .all()
+            )
+
+            padroes_pos = [p for p in todos_padroes if p.tipo == 'positivo']
+            padroes_neg = [p for p in todos_padroes if p.tipo == 'negativo']
+
+            if not padroes_pos:
+                return []
+
+            filtros_pos = [
+                PublicacaoMonitorada.texto_completo.ilike(f'%{p.expressao}%')
+                for p in padroes_pos
+            ]
+
             rows = (
                 session.query(PublicacaoMonitorada, PessoaMonitorada)
                 .join(PessoaMonitorada, PublicacaoMonitorada.pessoa_id == PessoaMonitorada.id)
                 .filter(
                     PessoaMonitorada.ativo == True,
                     PublicacaoMonitorada.criado_em >= since,
-                    or_(p1, p2, p3, p4, p5, p6, p7),
+                    or_(*filtros_pos),
                 )
                 .order_by(PublicacaoMonitorada.data_disponibilizacao.desc())
                 .limit(limit)
@@ -915,26 +905,11 @@ class DiarioRepository:
             result = []
             for pub, pessoa in rows:
                 texto = (pub.texto_completo or "").lower()
-                if "mandado de levantamento" in texto:
-                    padrao = "mandado de levantamento"
-                elif "alvará" in texto and "levantamento" in texto:
-                    padrao = "alvará de levantamento"
-                elif "alvará" in texto and "pagamento" in texto:
-                    padrao = "alvará de pagamento"
-                elif "expedição de precatório" in texto or "expedir precatório" in texto:
-                    padrao = "expedição de precatório"
-                elif "precatório" in texto:
-                    padrao = "precatório"
-                elif "requisição de pequeno valor" in texto or ("rpv" in texto and "expedir" in texto):
-                    padrao = "rpv"
-                elif "homologação de acordo" in texto or "acordo homologado" in texto:
-                    padrao = "acordo homologado"
-                elif "desbloqueio" in texto or "levantamento do bloqueio" in texto or "bloqueio levantado" in texto:
-                    padrao = "desbloqueio"
-                elif "ordem de pagamento" in texto:
-                    padrao = "ordem de pagamento"
-                else:
-                    padrao = "sinal de recebimento"
+                padrao_nome = "sinal de recebimento"
+                for p in padroes_pos:
+                    if p.expressao.lower() in texto:
+                        padrao_nome = p.nome
+                        break
 
                 result.append({
                     "id": pub.id,
@@ -948,10 +923,145 @@ class DiarioRepository:
                     "texto_resumo": pub.texto_resumo,
                     "texto_completo": pub.texto_completo,
                     "link": pub.link,
-                    "padrao_detectado": padrao,
+                    "padrao_detectado": padrao_nome,
                     "criado_em": pub.criado_em.isoformat(),
                 })
+
+            # --- Filtro de padrões negativos ---
+            # Para cada processo único, verifica se existe publicação POSTERIOR
+            # à oportunidade detectada contendo um padrão negativo ativo.
+            # Se sim, o processo inteiro é removido dos resultados.
+            if result and padroes_neg:
+                filtros_neg = [
+                    PublicacaoMonitorada.texto_completo.ilike(f'%{p.expressao}%')
+                    for p in padroes_neg
+                ]
+
+                processo_max_data: dict[tuple, str] = {}
+                for r in result:
+                    if not r['numero_processo']:
+                        continue
+                    key = (r['pessoa_id'], r['numero_processo'])
+                    data = r['data_disponibilizacao'] or ''
+                    if key not in processo_max_data or data > processo_max_data[key]:
+                        processo_max_data[key] = data
+
+                processos_invalidados: set[tuple] = set()
+                for (pessoa_id, numero_processo), max_data in processo_max_data.items():
+                    tem_negativo = (
+                        session.query(PublicacaoMonitorada.id)
+                        .filter(
+                            PublicacaoMonitorada.pessoa_id == pessoa_id,
+                            PublicacaoMonitorada.numero_processo == numero_processo,
+                            PublicacaoMonitorada.data_disponibilizacao > max_data,
+                            or_(*filtros_neg),
+                        )
+                        .first()
+                    )
+                    if tem_negativo:
+                        processos_invalidados.add((pessoa_id, numero_processo))
+
+                if processos_invalidados:
+                    result = [
+                        r for r in result
+                        if (r['pessoa_id'], r['numero_processo']) not in processos_invalidados
+                    ]
+
             return result
+
+    # ===== Padrões de Oportunidade (configuração) =====
+
+    _PADROES_PADRAO_POSITIVOS = [
+        ("Mandado de Levantamento",  "mandado de levantamento"),
+        ("Alvará de Levantamento",   "alvará de levantamento"),
+        ("Alvará de Pagamento",      "alvará de pagamento"),
+        ("Precatório",               "expedição de precatório"),
+        ("Precatório",               "precatório"),
+        ("RPV",                      "requisição de pequeno valor"),
+        ("Acordo Homologado",        "acordo homologado"),
+        ("Desbloqueio",              "desbloqueio"),
+        ("Ordem de Pagamento",       "ordem de pagamento"),
+    ]
+
+    _PADROES_PADRAO_NEGATIVOS = [
+        ("Anulação",    "anulação"),
+        ("Cassação",    "cassação"),
+        ("Suspensão",   "suspensão"),
+        ("Revogação",   "revogação"),
+        ("Reforma",     "reformado"),
+        ("Rescisão",    "rescisão"),
+        ("Extinção",    "extinção"),
+    ]
+
+    def seed_padroes_oportunidade(self) -> None:
+        """Popula padroes_oportunidade com defaults se a tabela estiver vazia (por tipo)."""
+        with self.get_session() as session:
+            tem_positivos = session.query(PadraoOportunidade).filter(PadraoOportunidade.tipo == 'positivo').count() > 0
+            tem_negativos = session.query(PadraoOportunidade).filter(PadraoOportunidade.tipo == 'negativo').count() > 0
+
+            if not tem_positivos:
+                for i, (nome, expressao) in enumerate(self._PADROES_PADRAO_POSITIVOS):
+                    session.add(PadraoOportunidade(nome=nome, expressao=expressao, tipo='positivo', ativo=True, ordem=i))
+                logger.info(f"padroes_oportunidade: {len(self._PADROES_PADRAO_POSITIVOS)} padrões positivos inseridos")
+
+            if not tem_negativos:
+                for i, (nome, expressao) in enumerate(self._PADROES_PADRAO_NEGATIVOS):
+                    session.add(PadraoOportunidade(nome=nome, expressao=expressao, tipo='negativo', ativo=True, ordem=i))
+                logger.info(f"padroes_oportunidade: {len(self._PADROES_PADRAO_NEGATIVOS)} padrões negativos inseridos")
+
+            session.commit()
+
+    def _to_dict(self, p: PadraoOportunidade) -> dict:
+        return {"id": p.id, "nome": p.nome, "expressao": p.expressao, "tipo": p.tipo, "ativo": p.ativo, "ordem": p.ordem, "criado_em": p.criado_em.isoformat()}
+
+    def listar_padroes_oportunidade(self) -> list[dict]:
+        with self.get_session() as session:
+            padroes = (
+                session.query(PadraoOportunidade)
+                .order_by(PadraoOportunidade.tipo, PadraoOportunidade.ordem.nullslast(), PadraoOportunidade.id)
+                .all()
+            )
+            return [self._to_dict(p) for p in padroes]
+
+    def criar_padrao_oportunidade(self, nome: str, expressao: str, tipo: str = 'positivo') -> dict:
+        with self.get_session() as session:
+            max_ordem = session.query(func.max(PadraoOportunidade.ordem)).filter(PadraoOportunidade.tipo == tipo).scalar() or 0
+            p = PadraoOportunidade(nome=nome, expressao=expressao, tipo=tipo, ativo=True, ordem=max_ordem + 1)
+            session.add(p)
+            session.commit()
+            session.refresh(p)
+            return self._to_dict(p)
+
+    def atualizar_padrao_oportunidade(self, padrao_id: int, **kwargs) -> dict | None:
+        with self.get_session() as session:
+            p = session.get(PadraoOportunidade, padrao_id)
+            if not p:
+                return None
+            for campo in ("nome", "expressao", "tipo", "ativo", "ordem"):
+                if campo in kwargs:
+                    setattr(p, campo, kwargs[campo])
+            session.commit()
+            session.refresh(p)
+            return self._to_dict(p)
+
+    def reordenar_padroes_oportunidade(self, ids_ordenados: list[int]) -> list[dict]:
+        """Recebe lista de IDs na nova ordem e atualiza o campo `ordem` de cada um."""
+        with self.get_session() as session:
+            for i, padrao_id in enumerate(ids_ordenados):
+                p = session.get(PadraoOportunidade, padrao_id)
+                if p:
+                    p.ordem = i
+            session.commit()
+        return self.listar_padroes_oportunidade()
+
+    def deletar_padrao_oportunidade(self, padrao_id: int) -> bool:
+        with self.get_session() as session:
+            p = session.get(PadraoOportunidade, padrao_id)
+            if not p:
+                return False
+            session.delete(p)
+            session.commit()
+            return True
 
     def alerta_oportunidade_existe(self, publicacao_id: int) -> bool:
         """Verifica se já existe alerta OPORTUNIDADE_CREDITO para esta publicação (deduplicação)."""

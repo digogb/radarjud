@@ -424,6 +424,44 @@ export const oportunidadesApi = {
     },
 };
 
+// ===== Padrões de Oportunidade =====
+
+export interface PadraoOportunidade {
+    id: number;
+    nome: string;
+    expressao: string;
+    tipo: 'positivo' | 'negativo';
+    ativo: boolean;
+    ordem: number | null;
+    criado_em: string;
+}
+
+export const padroesApi = {
+    listar: async (): Promise<PadraoOportunidade[]> => {
+        const response = await api.get('/v1/padroes-oportunidade');
+        return response.data;
+    },
+
+    criar: async (data: { nome: string; expressao: string; tipo: 'positivo' | 'negativo' }): Promise<PadraoOportunidade> => {
+        const response = await api.post('/v1/padroes-oportunidade', data);
+        return response.data;
+    },
+
+    atualizar: async (id: number, data: { nome?: string; expressao?: string; ativo?: boolean }): Promise<PadraoOportunidade> => {
+        const response = await api.put(`/v1/padroes-oportunidade/${id}`, data);
+        return response.data;
+    },
+
+    deletar: async (id: number): Promise<void> => {
+        await api.delete(`/v1/padroes-oportunidade/${id}`);
+    },
+
+    reordenar: async (ids: number[]): Promise<PadraoOportunidade[]> => {
+        const response = await api.post('/v1/padroes-oportunidade/reordenar', { ids });
+        return response.data;
+    },
+};
+
 export const importacaoApi = {
     importarPlanilha: async (
         arquivo: File,

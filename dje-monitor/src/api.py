@@ -75,6 +75,11 @@ def _init_scheduler():
 @app.on_event("startup")
 def startup_event():
     _init_scheduler()
+    # Seed padrões de oportunidade (só insere se tabela vazia)
+    try:
+        repo.seed_padroes_oportunidade()
+    except Exception as e:
+        logger.warning(f"Não foi possível fazer seed de padrões: {e}")
     # Garantir collections do Qdrant
     try:
         from services.embedding_service import ensure_collections, get_model
@@ -576,6 +581,60 @@ def buscar_oportunidades(
         for item in items:
             item["score_semantico"] = scores[item["id"]]
     return {"total": len(items), "items": items}
+
+
+@app.get("/api/v1/padroes-oportunidade")
+def listar_padroes():
+    """Lista padrões de detecção de oportunidades configurados."""
+    return repo.listar_padroes_oportunidade()
+
+
+class PadraoCreate(BaseModel):
+    nome: str
+    expressao: str
+    tipo: str = 'positivo'  # 'positivo' ou 'negativo'
+
+
+class PadraoUpdate(BaseModel):
+    nome: Optional[str] = None
+    expressao: Optional[str] = None
+    tipo: Optional[str] = None
+    ativo: Optional[bool] = None
+    ordem: Optional[int] = None
+
+
+class PadraoReordenar(BaseModel):
+    ids: List[int]
+
+
+@app.post("/api/v1/padroes-oportunidade", status_code=201)
+def criar_padrao(body: PadraoCreate):
+    """Cria um novo padrão de detecção."""
+    return repo.criar_padrao_oportunidade(nome=body.nome, expressao=body.expressao, tipo=body.tipo)
+
+
+@app.post("/api/v1/padroes-oportunidade/reordenar")
+def reordenar_padroes(body: PadraoReordenar):
+    """Recebe lista de IDs na nova ordem e salva a prioridade."""
+    return repo.reordenar_padroes_oportunidade(body.ids)
+
+
+@app.put("/api/v1/padroes-oportunidade/{padrao_id}")
+def atualizar_padrao(padrao_id: int, body: PadraoUpdate):
+    """Atualiza nome, expressão ou status ativo de um padrão."""
+    updates = {k: v for k, v in body.model_dump().items() if v is not None}
+    padrao = repo.atualizar_padrao_oportunidade(padrao_id, **updates)
+    if not padrao:
+        raise HTTPException(status_code=404, detail="Padrão não encontrado")
+    return padrao
+
+
+@app.delete("/api/v1/padroes-oportunidade/{padrao_id}", status_code=204)
+def deletar_padrao(padrao_id: int):
+    """Remove um padrão de detecção."""
+    ok = repo.deletar_padrao_oportunidade(padrao_id)
+    if not ok:
+        raise HTTPException(status_code=404, detail="Padrão não encontrado")
 
 
 @app.post("/api/v1/oportunidades/varrer")

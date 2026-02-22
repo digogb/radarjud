@@ -320,6 +320,25 @@ function PublicacaoDrawerItem({
 // Página principal
 // ---------------------------------------------------------------------------
 
+type Ordenacao = 'data_desc' | 'data_asc' | 'nome' | 'publicacoes'
+
+const ORDENACOES: { value: Ordenacao; label: string }[] = [
+  { value: 'data_desc', label: 'Mais recente' },
+  { value: 'data_asc',  label: 'Mais antigo'  },
+  { value: 'nome',      label: 'Nome (A→Z)'   },
+  { value: 'publicacoes', label: 'Mais publicações' },
+]
+
+function ordenarGrupos(grupos: OportunidadeGrupo[], ord: Ordenacao): OportunidadeGrupo[] {
+  return [...grupos].sort((a, b) => {
+    if (ord === 'data_desc') return b.data_mais_recente.localeCompare(a.data_mais_recente)
+    if (ord === 'data_asc')  return a.data_mais_recente.localeCompare(b.data_mais_recente)
+    if (ord === 'nome')      return a.pessoa_nome.localeCompare(b.pessoa_nome, 'pt-BR')
+    if (ord === 'publicacoes') return b.total - a.total
+    return 0
+  })
+}
+
 export default function Oportunidades() {
   const [dias, setDias] = useState(30)
   const [itens, setItens] = useState<OportunidadeItem[]>([])
@@ -331,15 +350,19 @@ export default function Oportunidades() {
   const [grupoSelecionado, setGrupoSelecionado] = useState<OportunidadeGrupo | null>(null)
   const [filtroNome, setFiltroNome] = useState('')
   const [filtroProcesso, setFiltroProcesso] = useState('')
+  const [ordenacao, setOrdenacao] = useState<Ordenacao>('data_desc')
   const scrollPosRef = useRef(0)
 
-  const grupos = agruparPorProcesso(itens).filter(g => {
-    const nome = filtroNome.trim().toLowerCase()
-    const proc = filtroProcesso.trim().toLowerCase()
-    if (nome && !g.pessoa_nome.toLowerCase().includes(nome)) return false
-    if (proc && !(g.numero_processo ?? '').toLowerCase().includes(proc)) return false
-    return true
-  })
+  const grupos = ordenarGrupos(
+    agruparPorProcesso(itens).filter(g => {
+      const nome = filtroNome.trim().toLowerCase()
+      const proc = filtroProcesso.trim().toLowerCase()
+      if (nome && !g.pessoa_nome.toLowerCase().includes(nome)) return false
+      if (proc && !(g.numero_processo ?? '').toLowerCase().includes(proc)) return false
+      return true
+    }),
+    ordenacao
+  )
 
   // Lock/unlock scroll quando o drawer está aberto
   useEffect(() => {
@@ -543,22 +566,37 @@ export default function Oportunidades() {
         </div>
       ) : grupos.length > 0 ? (
         <>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 16, color: 'var(--text-secondary)', fontSize: '0.9rem' }}>
-            <TrendingUp size={16} style={{ color: 'var(--warning)' }} />
-            <span>
-              <strong style={{ color: 'var(--warning)' }}>{grupos.length}</strong> processo{grupos.length !== 1 ? 's' : ''} com oportunidades
-              {(() => {
-                const totalPubs = grupos.reduce((acc, g) => acc + g.total, 0)
-                return totalPubs !== grupos.length
-                  ? <span style={{ marginLeft: 6, color: 'var(--text-muted)' }}>({totalPubs} publicações)</span>
-                  : null
-              })()}
-              {(filtroNome || filtroProcesso) && (
-                <span style={{ marginLeft: 8, color: 'var(--text-muted)', fontSize: '0.82rem' }}>
-                  — filtrado de {agruparPorProcesso(itens).length} processos
-                </span>
-              )}
-            </span>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 16 }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, color: 'var(--text-secondary)', fontSize: '0.9rem' }}>
+              <TrendingUp size={16} style={{ color: 'var(--warning)' }} />
+              <span>
+                <strong style={{ color: 'var(--warning)' }}>{grupos.length}</strong> processo{grupos.length !== 1 ? 's' : ''} com oportunidades
+                {(() => {
+                  const totalPubs = grupos.reduce((acc, g) => acc + g.total, 0)
+                  return totalPubs !== grupos.length
+                    ? <span style={{ marginLeft: 6, color: 'var(--text-muted)' }}>({totalPubs} publicações)</span>
+                    : null
+                })()}
+                {(filtroNome || filtroProcesso) && (
+                  <span style={{ marginLeft: 8, color: 'var(--text-muted)', fontSize: '0.82rem' }}>
+                    — filtrado de {agruparPorProcesso(itens).length} processos
+                  </span>
+                )}
+              </span>
+            </div>
+            <div style={{ position: 'relative' }}>
+              <select
+                className="input-field"
+                style={{ appearance: 'none', cursor: 'pointer', paddingRight: 32, fontSize: '0.82rem', padding: '6px 32px 6px 12px' }}
+                value={ordenacao}
+                onChange={e => setOrdenacao(e.target.value as Ordenacao)}
+              >
+                {ORDENACOES.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
+              </select>
+              <div style={{ position: 'absolute', right: 10, top: '50%', transform: 'translateY(-50%)', pointerEvents: 'none', color: 'var(--text-muted)' }}>
+                <svg width="10" height="6" viewBox="0 0 10 6" fill="none"><path d="M1 1L5 5L9 1" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/></svg>
+              </div>
+            </div>
           </div>
           <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
             {grupos.map(grupo => (
