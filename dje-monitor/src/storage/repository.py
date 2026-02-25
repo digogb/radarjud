@@ -858,6 +858,43 @@ class DiarioRepository:
             for a in alertas
         ]
 
+    def buscar_publicacoes_processo(
+        self, pessoa_id: int, numero_processo: str, limit: int = 50
+    ) -> list[dict]:
+        """Retorna publicações de uma pessoa em um processo específico, ordenadas por data.
+
+        A comparação é feita apenas pelos dígitos do número do processo para
+        tolerar variações de formatação (hífens, pontos, espaços).
+        """
+        from sqlalchemy import func as sa_func
+
+        digits_only = "".join(c for c in numero_processo if c.isdigit())
+        with self.get_session() as session:
+            pubs = (
+                session.query(PublicacaoMonitorada)
+                .filter(
+                    PublicacaoMonitorada.pessoa_id == pessoa_id,
+                    sa_func.regexp_replace(
+                        PublicacaoMonitorada.numero_processo, "[^0-9]", "", "g"
+                    ) == digits_only,
+                )
+                .order_by(PublicacaoMonitorada.data_disponibilizacao.asc())
+                .limit(limit)
+                .all()
+            )
+            return [
+                {
+                    "data_disponibilizacao": p.data_disponibilizacao or "",
+                    "orgao": p.orgao or "",
+                    "tipo_comunicacao": p.tipo_comunicacao or "",
+                    "texto_completo": p.texto_completo or "",
+                    "texto_resumo": p.texto_resumo or "",
+                    "link": p.link or "",
+                    "polos_json": p.polos_json or "{}",
+                }
+                for p in pubs
+            ]
+
     # ===== Oportunidades de Crédito =====
 
     def buscar_oportunidades(self, dias: int = 30, limit: int = 50) -> list[dict]:
@@ -911,6 +948,51 @@ class DiarioRepository:
                         padrao_nome = p.nome
                         break
 
+                # Filtro intra-publicação: pular se o mesmo texto contém padrão negativo
+                if padroes_neg and any(pn.expressao.lower() in texto for pn in padroes_neg):
+                    continue
+
+                # Filtro de polo: pular se pessoa está exclusivamente no polo passivo
+                polo_pessoa = "indefinido"
+                try:
+                    polos = json.loads(pub.polos_json or "{}")
+                except (ValueError, TypeError):
+                    polos = {}
+
+                # Fallback: se polo indefinido, buscar de outras publicações do mesmo processo
+                if (not polos.get("ativo") and not polos.get("passivo")
+                        and pub.numero_processo):
+                    outra = (
+                        session.query(PublicacaoMonitorada.polos_json)
+                        .filter(
+                            PublicacaoMonitorada.pessoa_id == pessoa.id,
+                            PublicacaoMonitorada.numero_processo == pub.numero_processo,
+                            PublicacaoMonitorada.id != pub.id,
+                            PublicacaoMonitorada.polos_json.isnot(None),
+                            PublicacaoMonitorada.polos_json != '{}',
+                        )
+                        .order_by(PublicacaoMonitorada.criado_em.desc())
+                        .first()
+                    )
+                    if outra and outra[0]:
+                        try:
+                            polos = json.loads(outra[0])
+                        except (ValueError, TypeError):
+                            pass
+
+                if polos:
+                    nome_lower = pessoa.nome.lower()
+                    nomes_ativo = [n.lower() for n in polos.get("ativo", [])]
+                    nomes_passivo = [n.lower() for n in polos.get("passivo", [])]
+                    no_ativo = any(nome_lower in n or n in nome_lower for n in nomes_ativo)
+                    no_passivo = any(nome_lower in n or n in nome_lower for n in nomes_passivo)
+                    if no_ativo:
+                        polo_pessoa = "ativo"
+                    elif no_passivo:
+                        polo_pessoa = "passivo"
+                    if no_passivo and not no_ativo:
+                        continue
+
                 result.append({
                     "id": pub.id,
                     "pessoa_id": pessoa.id,
@@ -924,6 +1006,7 @@ class DiarioRepository:
                     "texto_completo": pub.texto_completo,
                     "link": pub.link,
                     "padrao_detectado": padrao_nome,
+                    "polo_pessoa": polo_pessoa,
                     "criado_em": pub.criado_em.isoformat(),
                 })
 

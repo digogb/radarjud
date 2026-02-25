@@ -368,3 +368,39 @@ input, textarea, select {
 .delay-2 { animation-delay: 0.2s; }
 .delay-3 { animation-delay: 0.3s; }
 .delay-4 { animation-delay: 0.4s; }
+
+/* Markdown renderizado no resumo de IA */
+.resumo-ia {
+  font-size: 0.78rem;
+  color: var(--text-secondary);
+}
+.resumo-ia h1 { display: none; }
+.resumo-ia h2 {
+  font-size: 0.75rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-muted);
+  margin: 16px 0 6px;
+  padding-bottom: 4px;
+  border-bottom: 1px solid var(--glass-border);
+}
+.resumo-ia h3 {
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: var(--text-muted);
+  margin: 12px 0 4px;
+  padding-left: 8px;
+  border-left: 2px solid var(--primary);
+}
+.resumo-ia p { margin: 4px 0 8px; color: var(--text-secondary); }
+.resumo-ia ul, .resumo-ia ol {
+  padding-left: 16px;
+  margin: 4px 0 8px;
+}
+.resumo-ia li { margin-bottom: 3px; }
+.resumo-ia strong {
+  color: var(--text-primary);
+  font-weight: 600;
+}
+.resumo-ia hr { border: none; border-top: 1px solid var(--glass-border); margin: 10px 0; }

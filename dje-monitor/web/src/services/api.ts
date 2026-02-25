@@ -408,6 +408,7 @@ export interface OportunidadeItem {
     texto_completo?: string;
     link?: string;
     padrao_detectado: string;
+    polo_pessoa?: string;
     criado_em: string;
     score_semantico?: number;
 }
@@ -420,6 +421,17 @@ export const oportunidadesApi = {
 
     varrer: async (): Promise<{ status: string }> => {
         const response = await api.post('/v1/oportunidades/varrer');
+        return response.data;
+    },
+
+    resumo: async (pessoa_id: number, numero_processo: string): Promise<{
+        resumo: string;
+        veredicto: string | null;
+        papel: string | null;
+        valor: string | null;
+        cache: boolean;
+    }> => {
+        const response = await api.post('/v1/oportunidades/resumo', { pessoa_id, numero_processo });
         return response.data;
     },
 };

@@ -645,6 +645,80 @@ def varrer_oportunidades():
     return {"status": "varredura enfileirada"}
 
 
+class ResumoProcessoRequest(BaseModel):
+    pessoa_id: int
+    numero_processo: str
+
+
+_RESUMO_CACHE_TTL = 60 * 60 * 24 * 7  # 7 dias
+
+
+_RESUMO_CACHE_VERSION = "v2"  # incrementar para invalidar cache antigo
+
+
+def _resumo_cache_key(pessoa_id: int, numero_processo: str, total_pubs: int) -> str:
+    return f"resumo:{_RESUMO_CACHE_VERSION}:{pessoa_id}:{numero_processo}:{total_pubs}"
+
+
+@app.post("/api/v1/oportunidades/resumo")
+def resumir_processo(body: ResumoProcessoRequest):
+    """Gera resumo de um processo via OpenAI a partir das publicações monitoradas.
+
+    O resultado é cacheado no Redis por 7 dias (ou enquanto o número de publicações
+    não mudar), evitando chamadas repetidas à API da OpenAI.
+    """
+    if not config.openai_habilitado:
+        raise HTTPException(
+            status_code=503,
+            detail="OpenAI não configurada. Defina DJE_OPENAI_API_KEY no ambiente.",
+        )
+
+    pessoa = repo.obter_pessoa(body.pessoa_id)
+    pessoa_nome = pessoa["nome"] if pessoa else None
+
+    publicacoes = repo.buscar_publicacoes_processo(
+        pessoa_id=body.pessoa_id,
+        numero_processo=body.numero_processo,
+    )
+    if not publicacoes:
+        raise HTTPException(status_code=404, detail="Nenhuma publicação encontrada para este processo.")
+
+    import json as _json
+    cache_key = _resumo_cache_key(body.pessoa_id, body.numero_processo, len(publicacoes))
+    try:
+        import redis as _redis
+        r = _redis.from_url(config.redis_url, decode_responses=True)
+        cached = r.get(cache_key)
+        if cached:
+            resultado = _json.loads(cached)
+            resultado["cache"] = True
+            return resultado
+    except Exception as e:
+        logger.warning(f"Redis indisponível para cache de resumo: {e}")
+        r = None
+
+    from services.resumo_service import gerar_resumo_processo
+    try:
+        resultado = gerar_resumo_processo(
+            publicacoes=publicacoes,
+            api_key=config.openai_api_key,
+            modelo=config.openai_model,
+            pessoa_nome=pessoa_nome,
+            numero_processo=body.numero_processo,
+        )
+    except RuntimeError as e:
+        raise HTTPException(status_code=502, detail=str(e))
+
+    try:
+        if r:
+            r.setex(cache_key, _RESUMO_CACHE_TTL, _json.dumps(resultado, ensure_ascii=False))
+    except Exception as e:
+        logger.warning(f"Falha ao salvar resumo no Redis: {e}")
+
+    resultado["cache"] = False
+    return resultado
+
+
 @app.post("/api/v1/search/reindex")
 def trigger_reindex():
     """Dispara reindexação completa das publicações no Qdrant."""

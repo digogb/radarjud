@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
 import { createPortal } from 'react-dom'
-import { TrendingUp, Search, ExternalLink, FileText, RefreshCw, AlertTriangle, Loader2, Clock, X, Calendar, ChevronDown, ChevronUp } from 'lucide-react'
+import ReactMarkdown from 'react-markdown'
+import { TrendingUp, Search, ExternalLink, FileText, RefreshCw, AlertTriangle, Loader2, Clock, X, Calendar, ChevronDown, ChevronUp, Sparkles } from 'lucide-react'
 import { oportunidadesApi, OportunidadeItem } from '../services/api'
 
 const PADROES_LABEL: Record<string, string> = {
@@ -47,6 +48,7 @@ interface OportunidadeGrupo {
   tribunal: string
   numero_processo: string | null
   padroes: string[]
+  polo_pessoa: string
   data_mais_recente: string
   total: number
   itens: OportunidadeItem[]
@@ -64,6 +66,7 @@ function agruparPorProcesso(itens: OportunidadeItem[]): OportunidadeGrupo[] {
         tribunal: item.tribunal,
         numero_processo: item.numero_processo ?? null,
         padroes: [],
+        polo_pessoa: item.polo_pessoa ?? 'indefinido',
         data_mais_recente: item.data_disponibilizacao,
         total: 0,
         itens: [],
@@ -148,6 +151,16 @@ function GrupoCard({
                 {grupo.tribunal}
               </span>
             )}
+            <span style={{
+              background: grupo.polo_pessoa === 'ativo' ? 'var(--success-muted)' : 'var(--glass-border)',
+              color: grupo.polo_pessoa === 'ativo' ? 'var(--success)' : 'var(--text-muted)',
+              borderRadius: 6,
+              padding: '2px 8px',
+              fontSize: '0.73rem',
+              fontWeight: 600,
+            }}>
+              {grupo.polo_pessoa === 'ativo' ? 'Credor' : 'Polo indefinido'}
+            </span>
             {grupo.total > 1 && (
               <span style={{
                 background: 'var(--glass-border)',
@@ -317,6 +330,95 @@ function PublicacaoDrawerItem({
 }
 
 // ---------------------------------------------------------------------------
+// Resumo IA — card com badges e markdown
+// ---------------------------------------------------------------------------
+
+const VEREDICTO_INFO: Record<string, { label: string; bg: string; color: string }> = {
+  CREDITO_IDENTIFICADO: { label: 'Crédito Identificado', bg: 'var(--success-muted)', color: 'var(--success)' },
+  CREDITO_POSSIVEL:     { label: 'Crédito Possível',     bg: 'var(--warning-muted)', color: 'var(--warning)' },
+  SEM_CREDITO:          { label: 'Sem Crédito',          bg: 'var(--danger-muted, #fee2e2)', color: 'var(--danger, #dc2626)' },
+}
+
+const PAPEL_INFO: Record<string, { label: string; bg: string; color: string }> = {
+  CREDOR:    { label: 'Credor',          bg: 'var(--success-muted)',        color: 'var(--success)'        },
+  DEVEDOR:   { label: 'Devedor',         bg: 'var(--danger-muted, #fee2e2)', color: 'var(--danger, #dc2626)' },
+  INDEFINIDO: { label: 'Papel indefinido', bg: 'var(--glass-border)',       color: 'var(--text-muted)'     },
+}
+
+function ResumoCard({
+  resumo,
+  meta,
+  fromCache,
+}: {
+  resumo: string
+  meta: { veredicto: string | null; papel: string | null; valor: string | null } | null
+  fromCache: boolean
+}) {
+  const veredictoInfo = meta?.veredicto ? VEREDICTO_INFO[meta.veredicto] : null
+  const papelInfo = meta?.papel ? PAPEL_INFO[meta.papel] : null
+  const temValor = meta?.valor && meta.valor.toLowerCase() !== 'não identificado'
+
+  return (
+    <div style={{ marginTop: 14 }}>
+      {/* Badges de metadados */}
+      {(veredictoInfo || papelInfo || temValor || fromCache) && (
+        <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginBottom: 10, alignItems: 'center' }}>
+          {veredictoInfo && (
+            <span style={{
+              padding: '3px 10px', borderRadius: 20,
+              fontSize: '0.73rem', fontWeight: 700,
+              background: veredictoInfo.bg, color: veredictoInfo.color,
+            }}>
+              {veredictoInfo.label}
+            </span>
+          )}
+          {papelInfo && (
+            <span style={{
+              padding: '3px 10px', borderRadius: 20,
+              fontSize: '0.73rem', fontWeight: 600,
+              background: papelInfo.bg, color: papelInfo.color,
+            }}>
+              {papelInfo.label}
+            </span>
+          )}
+          {temValor && (
+            <span style={{
+              padding: '3px 10px', borderRadius: 20,
+              fontSize: '0.73rem', fontWeight: 600,
+              background: 'var(--primary-muted)', color: 'var(--primary)',
+            }}>
+              {meta!.valor}
+            </span>
+          )}
+          {fromCache && (
+            <span style={{
+              marginLeft: 'auto',
+              fontSize: '0.7rem', color: 'var(--text-muted)',
+              display: 'flex', alignItems: 'center', gap: 4,
+            }} title="Resultado salvo em cache — nenhuma chamada à OpenAI foi feita">
+              ⚡ cache
+            </span>
+          )}
+        </div>
+      )}
+
+      {/* Resumo em Markdown */}
+      <div
+        className="resumo-ia"
+        style={{
+          background: 'var(--glass-bg)',
+          border: '1px solid var(--glass-border)',
+          borderRadius: 10,
+          padding: '14px 18px',
+        }}
+      >
+        <ReactMarkdown>{resumo}</ReactMarkdown>
+      </div>
+    </div>
+  )
+}
+
+// ---------------------------------------------------------------------------
 // Página principal
 // ---------------------------------------------------------------------------
 
@@ -348,6 +450,11 @@ export default function Oportunidades() {
   const [buscou, setBuscou] = useState(false)
   const [novasOportunidades, setNovasOportunidades] = useState(0)
   const [grupoSelecionado, setGrupoSelecionado] = useState<OportunidadeGrupo | null>(null)
+  const [resumo, setResumo] = useState<string | null>(null)
+  const [resumoMeta, setResumoMeta] = useState<{ veredicto: string | null; papel: string | null; valor: string | null } | null>(null)
+  const [resumoFromCache, setResumoFromCache] = useState<boolean | null>(null)
+  const [resumoLoading, setResumoLoading] = useState(false)
+  const [resumoErro, setResumoErro] = useState('')
   const [filtroNome, setFiltroNome] = useState('')
   const [filtroProcesso, setFiltroProcesso] = useState('')
   const [ordenacao, setOrdenacao] = useState<Ordenacao>('data_desc')
@@ -604,7 +711,7 @@ export default function Oportunidades() {
                 key={grupo.key}
                 grupo={grupo}
                 selecionado={grupoSelecionado?.key === grupo.key}
-                onClick={() => setGrupoSelecionado(grupo)}
+                onClick={() => { setGrupoSelecionado(grupo); setResumo(null); setResumoMeta(null); setResumoFromCache(null); setResumoErro('') }}
                 formatarData={formatarData}
               />
             ))}
@@ -652,6 +759,79 @@ export default function Oportunidades() {
               {/* Badges dos padrões */}
               <div style={{ padding: '20px 24px 16px', display: 'flex', gap: 6, flexWrap: 'wrap' }}>
                 {grupoSelecionado.padroes.map(p => <PadraoBadge key={p} padrao={p} />)}
+              </div>
+
+              {/* Resumo IA */}
+              <div style={{ padding: '0 24px 16px' }}>
+                <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 0 }}>
+                <button
+                  onClick={async () => {
+                    if (!grupoSelecionado.numero_processo) return
+                    setResumo(null)
+                    setResumoErro('')
+                    setResumoLoading(true)
+                    try {
+                      const res = await oportunidadesApi.resumo(
+                        grupoSelecionado.pessoa_id,
+                        grupoSelecionado.numero_processo,
+                      )
+                      setResumo(res.resumo)
+                      setResumoMeta({ veredicto: res.veredicto, papel: res.papel, valor: res.valor })
+                      setResumoFromCache(res.cache ?? false)
+                    } catch (e: any) {
+                      setResumoErro(e?.response?.data?.detail || 'Erro ao gerar resumo.')
+                    } finally {
+                      setResumoLoading(false)
+                    }
+                  }}
+                  disabled={resumoLoading || !grupoSelecionado.numero_processo}
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: 7,
+                    padding: '8px 16px',
+                    borderRadius: 8,
+                    border: '1px solid var(--primary)',
+                    background: 'var(--primary-muted)',
+                    color: 'var(--primary)',
+                    fontSize: '0.85rem',
+                    fontWeight: 600,
+                    cursor: resumoLoading ? 'wait' : 'pointer',
+                    opacity: resumoLoading ? 0.7 : 1,
+                  }}
+                >
+                  {resumoLoading
+                    ? <Loader2 size={15} style={{ animation: 'spin 1s linear infinite' }} />
+                    : <Sparkles size={15} />}
+                  {resumoLoading ? 'Gerando resumo…' : 'Resumir processo'}
+                </button>
+
+                {grupoSelecionado.numero_processo && (
+                  <button
+                    onClick={() => abrirProcesso(grupoSelecionado.numero_processo!, grupoSelecionado.tribunal)}
+                    className="btn btn-secondary"
+                    style={{ fontSize: '0.85rem', padding: '8px 16px' }}
+                  >
+                    <ExternalLink size={15} />
+                    Abrir processo
+                  </button>
+                )}
+                </div>
+
+                {resumoErro && (
+                  <div style={{
+                    marginTop: 12,
+                    padding: '10px 14px',
+                    borderRadius: 8,
+                    background: 'var(--error-muted, #fee)',
+                    color: 'var(--error, #c00)',
+                    fontSize: '0.85rem',
+                  }}>
+                    {resumoErro}
+                  </div>
+                )}
+
+                {resumo && <ResumoCard resumo={resumo} meta={resumoMeta} fromCache={resumoFromCache ?? false} />}
               </div>
 
               {/* Lista de publicações */}

@@ -290,6 +290,12 @@ class DJENCollector(BaseCollector):
                         # Se não tiver classificação, vai para lista genérica
                         polos["outros"].append(nome)
 
+                # Fallback: se não identificou polos via API, tenta extrair do texto
+                if not polos["ativo"] and not polos["passivo"] and texto_conteudo:
+                    polos_texto = self._extrair_polos_do_texto(texto_conteudo)
+                    if polos_texto["ativo"] or polos_texto["passivo"]:
+                        polos = polos_texto
+
                 res = {
                     "tribunal": item.get("siglaTribunal", self.tribunal),
                     "processo": processo,

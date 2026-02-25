@@ -104,9 +104,17 @@ class Config:
                     e.strip() for e in emails_env.split(",") if e.strip()
                 ]
 
+    # LLM (OpenAI)
+    openai_api_key: str = os.getenv("DJE_OPENAI_API_KEY", "")
+    openai_model: str = os.getenv("DJE_OPENAI_MODEL", "gpt-4o-mini")
+
     @property
     def telegram_habilitado(self) -> bool:
         return bool(self.telegram_bot_token and self.telegram_chat_id)
+
+    @property
+    def openai_habilitado(self) -> bool:
+        return bool(self.openai_api_key)
 
     @property
     def email_habilitado(self) -> bool:
