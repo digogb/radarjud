@@ -941,7 +941,7 @@ class DiarioRepository:
 
             result = []
             for pub, pessoa in rows:
-                texto = (pub.texto_completo or "").lower()
+                texto = ((pub.texto_completo or "") + " " + (pub.texto_resumo or "")).lower()
                 padrao_nome = "sinal de recebimento"
                 for p in padroes_pos:
                     if p.expressao.lower() in texto:
@@ -1016,7 +1016,10 @@ class DiarioRepository:
             # Se sim, o processo inteiro é removido dos resultados.
             if result and padroes_neg:
                 filtros_neg = [
-                    PublicacaoMonitorada.texto_completo.ilike(f'%{p.expressao}%')
+                    or_(
+                        PublicacaoMonitorada.texto_completo.ilike(f'%{p.expressao}%'),
+                        PublicacaoMonitorada.texto_resumo.ilike(f'%{p.expressao}%'),
+                    )
                     for p in padroes_neg
                 ]
 
