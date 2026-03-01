@@ -214,6 +214,52 @@ class PadraoOportunidade(Base):
         return f"<PadraoOportunidade(nome='{self.nome}', expressao='{self.expressao}', ativo={self.ativo})>"
 
 
+class ClassificacaoProcesso(Base):
+    """Classificação automática (via LLM) do papel da parte monitorada em um processo."""
+
+    __tablename__ = "classificacoes_processo"
+
+    id = Column(Integer, primary_key=True)
+    pessoa_id = Column(Integer, ForeignKey("pessoas_monitoradas.id"), nullable=False, index=True)
+    numero_processo = Column(String(30), nullable=False, index=True)  # normalizado (só dígitos)
+    papel = Column(String(20))              # CREDOR | DEVEDOR | INDEFINIDO
+    veredicto = Column(String(30))          # CREDITO_IDENTIFICADO | CREDITO_POSSIVEL | SEM_CREDITO
+    valor = Column(String(100))             # "R$ 50.000,00" ou "não identificado"
+    justificativa = Column(String(500))     # 1 frase explicando a classificação
+    total_pubs = Column(Integer, nullable=False)  # para invalidação automática
+    criado_em = Column(DateTime, default=datetime.utcnow)
+    atualizado_em = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    pessoa = relationship("PessoaMonitorada")
+
+    __table_args__ = (
+        UniqueConstraint("pessoa_id", "numero_processo", name="uq_classif_pessoa_processo"),
+    )
+
+    def __repr__(self):
+        return f"<ClassificacaoProcesso(pessoa_id={self.pessoa_id}, processo='{self.numero_processo}', papel='{self.papel}')>"
+
+
+class OportunidadeDescartada(Base):
+    """Processo descartado manualmente pelo usuário na página de Oportunidades."""
+
+    __tablename__ = "oportunidades_descartadas"
+
+    id = Column(Integer, primary_key=True)
+    pessoa_id = Column(Integer, ForeignKey("pessoas_monitoradas.id"), nullable=False, index=True)
+    numero_processo = Column(String(50), nullable=False)  # normalizado (só dígitos)
+    descartado_em = Column(DateTime, default=datetime.utcnow)
+
+    pessoa = relationship("PessoaMonitorada")
+
+    __table_args__ = (
+        UniqueConstraint("pessoa_id", "numero_processo", name="uq_descartada_pessoa_processo"),
+    )
+
+    def __repr__(self):
+        return f"<OportunidadeDescartada(pessoa_id={self.pessoa_id}, processo='{self.numero_processo}')>"
+
+
 class Alerta(Base):
     """Alerta gerado quando uma nova publicação é encontrada para uma pessoa monitorada."""
 

@@ -571,6 +571,8 @@ def buscar_oportunidades(
 
     Com `semantico=true` (padrão), aplica reranking via Qdrant para filtrar resultados com baixa
     relevância semântica, reduzindo falsos positivos do matching por palavra-chave.
+
+    Cada item é enriquecido com classificação IA (ia_papel, ia_veredicto, ia_valor) quando disponível.
     """
     items = repo.buscar_oportunidades(dias=dias, limit=limit)
     if semantico and items:
@@ -580,6 +582,29 @@ def buscar_oportunidades(
         items = [item for item in items if item["id"] in scores]
         for item in items:
             item["score_semantico"] = scores[item["id"]]
+
+    # Enriquecer com classificações IA e descartadas pelo usuário (batch)
+    if items:
+        chaves = list({(item["pessoa_id"], item.get("numero_processo") or "") for item in items})
+        chaves = [(pid, proc) for pid, proc in chaves if proc]
+        classificacoes = repo.obter_classificacoes_batch(chaves) if chaves else {}
+        descartadas = repo.obter_descartadas_batch(chaves) if chaves else set()
+        for item in items:
+            proc = item.get("numero_processo") or ""
+            proc_digits = "".join(c for c in proc if c.isdigit())
+            classif = classificacoes.get((item["pessoa_id"], proc_digits))
+            if classif:
+                item["ia_papel"] = classif["papel"]
+                item["ia_veredicto"] = classif["veredicto"]
+                item["ia_valor"] = classif["valor"]
+                item["ia_justificativa"] = classif["justificativa"]
+            else:
+                item["ia_papel"] = None
+                item["ia_veredicto"] = None
+                item["ia_valor"] = None
+                item["ia_justificativa"] = None
+            item["descartado_por_usuario"] = (item["pessoa_id"], proc_digits) in descartadas
+
     return {"total": len(items), "items": items}
 
 
@@ -637,12 +662,46 @@ def deletar_padrao(padrao_id: int):
         raise HTTPException(status_code=404, detail="Padrão não encontrado")
 
 
+class DescartarOportunidadeRequest(BaseModel):
+    pessoa_id: int
+    numero_processo: str
+
+
+@app.post("/api/v1/oportunidades/descartar", status_code=201)
+def descartar_oportunidade(body: DescartarOportunidadeRequest):
+    """Marca um processo como descartado pelo usuário."""
+    repo.descartar_oportunidade(body.pessoa_id, body.numero_processo)
+    return {"status": "descartado"}
+
+
+@app.delete("/api/v1/oportunidades/descartar", status_code=200)
+def restaurar_oportunidade(body: DescartarOportunidadeRequest):
+    """Remove o descarte de um processo (restaura para a aba original)."""
+    repo.restaurar_oportunidade(body.pessoa_id, body.numero_processo)
+    return {"status": "restaurado"}
+
+
 @app.post("/api/v1/oportunidades/varrer")
 def varrer_oportunidades():
     """Dispara varredura imediata de oportunidades de crédito."""
     from tasks import varrer_oportunidades_task
     varrer_oportunidades_task.send()
     return {"status": "varredura enfileirada"}
+
+
+class ClassificarProcessoRequest(BaseModel):
+    pessoa_id: int
+    numero_processo: str
+
+
+@app.post("/api/v1/oportunidades/classificar")
+def classificar_processo_endpoint(body: ClassificarProcessoRequest):
+    """Dispara classificação IA de credor/devedor para um processo específico."""
+    if not config.openai_habilitado:
+        raise HTTPException(status_code=503, detail="OpenAI não configurada.")
+    from tasks import classificar_processo_task
+    classificar_processo_task.send(body.pessoa_id, body.numero_processo)
+    return {"status": "classificação enfileirada"}
 
 
 class ResumoProcessoRequest(BaseModel):
@@ -653,7 +712,7 @@ class ResumoProcessoRequest(BaseModel):
 _RESUMO_CACHE_TTL = 60 * 60 * 24 * 7  # 7 dias
 
 
-_RESUMO_CACHE_VERSION = "v2"  # incrementar para invalidar cache antigo
+_RESUMO_CACHE_VERSION = "v3"  # v3: prompt neutro (sem viés devedor)
 
 
 def _resumo_cache_key(pessoa_id: int, numero_processo: str, total_pubs: int) -> str:

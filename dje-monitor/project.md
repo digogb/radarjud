@@ -38,23 +38,40 @@
 
 5. **Oportunidades de Crédito**
    - Varredura automática (a cada ciclo de sync) e sob demanda das publicações monitoradas em busca de sinais de recebimento de valores.
-   - Padrões detectados via `ilike` no `texto_completo`: mandado de levantamento, alvará de levantamento/pagamento, expedição de precatório, precatório.
+   - Padrões detectados via `ilike` no `texto_completo` com base na tabela `padroes_oportunidade` (configurável via interface).
+   - **Filtro negativo** pós-busca: processos cuja publicação mais recente contenha um padrão negativo são excluídos do resultado.
    - Janela de varredura automática: últimos 7 dias (`criado_em`). Janela de exibição na tela: últimos 30 dias (configurável até 365).
+   - Ordenação da lista por data, nome ou número de publicações.
    - Alertas especiais `OPORTUNIDADE_CREDITO` com deduplicação por `publicacao_id`.
    - Actor Dramatiq `varrer_oportunidades_task` (fila `manutencao`) chamado em cada ciclo do scheduler.
    - Página dedicada **Oportunidades** com filtros, cards de resultado e drawer lateral com texto completo.
 
-6. **Interface Web (React SPA)**
+6. **Resumo de Processo via IA (OpenAI)**
+   - Endpoint `POST /api/v1/oportunidades/resumo`: gera resumo estruturado do processo a partir das publicações monitoradas.
+   - Modelo `gpt-4o-mini` (configurável). Prompt jurídico extrai **VEREDICTO** (`CREDITO_IDENTIFICADO` / `CREDITO_POSSIVEL` / `SEM_CREDITO`), **PAPEL** (`CREDOR` / `DEVEDOR` / `INDEFINIDO`) e **VALOR** estimado.
+   - Cache Redis com TTL de 7 dias, versionado (`v2`) para invalidação automática.
+   - Habilitado automaticamente quando `DJE_OPENAI_API_KEY` está definido.
+   - Frontend: botão "Resumir processo" no drawer de oportunidades; `ResumoCard` com badges coloridos por veredicto/papel/valor; indicador ⚡ quando servido do cache; `react-markdown` para renderização do texto.
+
+7. **Parametrização de Padrões**
+   - Tabela `padroes_oportunidade` gerenciável via CRUD completo na API e na interface.
+   - Dois tipos: **positivo** (indica crédito) e **negativo** (invalida/exclui o processo).
+   - Reordenamento via drag-and-drop com endpoint `POST /api/v1/padroes-oportunidade/reordenar`.
+   - Toggle "Ativar/Desativar" individual e "Marcar todos / Desmarcar todos" por tipo (requisições paralelas).
+   - Seeds automáticos com padrões padrão ao iniciar o sistema.
+
+8. **Interface Web (React SPA)**
    - Todas as páginas têm ícone colorido no título (padrão visual unificado).
    - **Dashboard**: resumo estatístico (publicações, alertas não lidos, última sync).
    - **Busca**: busca ad hoc ou semântica com resultado em cards e drawer de detalhe. Aceita parâmetros via `location.state` (mesma aba) ou query string `?nome=&tribunal=` (nova aba).
    - **Monitorados**: lista de pessoas monitoradas com filtro, expansão de publicações e navegação integrada à Busca.
-   - **Oportunidades**: publicações agrupadas por processo; filtros dinâmicos de nome e número de processo; drawer lateral com lista de publicações em accordion; botão "Varrer agora".
+   - **Oportunidades**: publicações agrupadas por processo; filtros dinâmicos; drawer lateral; botão "Varrer agora"; botão "Resumir processo" com `ResumoCard` de IA.
+   - **Parametrização**: gerenciamento de padrões positivos/negativos em abas separadas, com toggle, reordenamento e criação/exclusão.
    - Navegação cruzada: Monitorados → Busca (mesma aba, router state); Oportunidades → Busca (nova aba, query params).
 
-6. **Agendamento em Dois Níveis**
+9. **Agendamento em Dois Níveis**
    - APScheduler na API enfileira `agendar_verificacoes_task` a cada N minutos.
-   - Worker Dramatiq processa as pessoas elegíveis (`proximo_check <= agora`) em paralelo (8 threads).
+   - Worker Dramatiq processa as pessoas elegíveis (`proximo_check <= agora`) em paralelo (2 threads por padrão).
 
 ---
 
@@ -74,6 +91,7 @@ dje-monitor/
 │   ├── services/
 │   │   ├── monitor_service.py      # Lógica de verificação e deduplicação
 │   │   ├── embedding_service.py    # Embeddings semânticos (Nomic + Qdrant)
+│   │   ├── resumo_service.py       # Resumo jurídico de processo via OpenAI
 │   │   └── import_pessoas.py       # Importação de planilha Excel
 │   ├── storage/
 │   │   ├── models.py               # SQLAlchemy ORM (PostgreSQL) + to_dict()
@@ -86,7 +104,8 @@ dje-monitor/
 │   │   ├── pages/
 │   │   │   ├── Busca.tsx           # Busca exata + semântica com drawer de detalhe
 │   │   │   ├── Monitorados.tsx     # Gestão de pessoas monitoradas
-│   │   │   ├── Oportunidades.tsx   # Oportunidades de crédito detectadas
+│   │   │   ├── Oportunidades.tsx   # Oportunidades de crédito + resumo IA
+│   │   │   ├── Parametrizacao.tsx  # CRUD de padrões positivos/negativos
 │   │   │   └── Dashboard.tsx       # Painel de resumo
 │   │   └── services/api.ts         # Client HTTP + semanticApi + oportunidadesApi
 │   └── nginx.conf
@@ -118,6 +137,7 @@ dje-monitor/
 | `pessoas_monitoradas` | Partes cadastradas para monitoramento |
 | `publicacoes_monitoradas` | Publicações encontradas (deduplicadas por `hash_unico`) |
 | `alertas` | Alertas de publicações; campo `tipo` distingue `NOVA_PUBLICACAO` de `OPORTUNIDADE_CREDITO` |
+| `padroes_oportunidade` | Padrões ILIKE configuráveis; campos `tipo` (positivo/negativo), `ativo`, `ordem` |
 | `cpfs_monitorados` | Legado: monitoramento por CPF via PDF |
 | `diarios_processados` | Legado: controle de PDFs baixados |
 | `ocorrencias` | Legado: matches de CPF em PDFs |
@@ -188,11 +208,13 @@ APScheduler (API) — a cada DJE_MONITOR_INTERVAL_MINUTES (padrão: 30 min)
 - httpx | pydantic | openpyxl
 - sentence-transformers (`nomic-ai/nomic-embed-text-v1.5`) — embeddings semânticos
 - qdrant-client — interface com o vector store
+- openai (`gpt-4o-mini`) — resumo jurídico de processos
 
 **Frontend**
 - React 18 + TypeScript + Vite
 - React Router v6
 - Lucide Icons | CSS customizado (sem framework de UI)
+- react-markdown — renderização do resumo de IA
 
 **Infraestrutura**
 - PostgreSQL 16 | Redis 7 | Qdrant v1.9.7
@@ -223,6 +245,8 @@ Definidas em `.env` (ver `.env.example`). As principais:
 | `DJE_EMBEDDING_DIMS` | `256` | Dimensões Matryoshka (256, 512 ou 768) |
 | `DJE_SEMANTIC_SCORE_THRESHOLD` | `0.35` | Score mínimo de similaridade |
 | `DJE_SEMANTIC_MAX_RESULTS` | `20` | Máximo de resultados semânticos |
+| `DJE_OPENAI_API_KEY` | — | Chave OpenAI (habilita resumo de processo) |
+| `DJE_OPENAI_MODEL` | `gpt-4o-mini` | Modelo OpenAI para resumo jurídico |
 
 ---
 
@@ -295,6 +319,12 @@ DJE_TEST_DATABASE_URL="postgresql://..." pytest tests/ -m integration
 | `POST` | `/api/v1/alertas/marcar-lidos` | Marca alertas como lidos |
 | `GET` | `/api/v1/oportunidades?dias=30&limit=50` | Lista publicações com padrões de crédito detectados |
 | `POST` | `/api/v1/oportunidades/varrer` | Dispara varredura imediata de oportunidades |
+| `POST` | `/api/v1/oportunidades/resumo` | Gera resumo jurídico do processo via OpenAI (cache Redis 7d) |
+| `GET` | `/api/v1/padroes-oportunidade` | Lista padrões positivos e negativos |
+| `POST` | `/api/v1/padroes-oportunidade` | Cria novo padrão |
+| `POST` | `/api/v1/padroes-oportunidade/reordenar` | Reordena padrões (drag-and-drop) |
+| `PUT` | `/api/v1/padroes-oportunidade/{id}` | Atualiza padrão (ativo, nome, expressão, tipo) |
+| `DELETE` | `/api/v1/padroes-oportunidade/{id}` | Remove padrão |
 | `POST` | `/api/v1/importar-planilha` | Import Excel de partes adversas |
 | `POST` | `/api/sync/forcar` | Força ciclo de verificação imediato |
 | `GET` | `/api/sync/status` | Status do scheduler e filas Redis |

@@ -411,6 +411,13 @@ export interface OportunidadeItem {
     polo_pessoa?: string;
     criado_em: string;
     score_semantico?: number;
+    // Classificação IA (credor/devedor)
+    ia_papel?: string | null;           // CREDOR | DEVEDOR | INDEFINIDO
+    ia_veredicto?: string | null;       // CREDITO_IDENTIFICADO | CREDITO_POSSIVEL | SEM_CREDITO
+    ia_valor?: string | null;           // "R$ X.XXX,XX" ou "não identificado"
+    ia_justificativa?: string | null;   // 1 frase
+    // Descarte manual pelo usuário
+    descartado_por_usuario?: boolean;
 }
 
 export const oportunidadesApi = {
@@ -432,6 +439,21 @@ export const oportunidadesApi = {
         cache: boolean;
     }> => {
         const response = await api.post('/v1/oportunidades/resumo', { pessoa_id, numero_processo });
+        return response.data;
+    },
+
+    classificar: async (pessoa_id: number, numero_processo: string): Promise<{ status: string }> => {
+        const response = await api.post('/v1/oportunidades/classificar', { pessoa_id, numero_processo });
+        return response.data;
+    },
+
+    descartar: async (pessoa_id: number, numero_processo: string): Promise<{ status: string }> => {
+        const response = await api.post('/v1/oportunidades/descartar', { pessoa_id, numero_processo });
+        return response.data;
+    },
+
+    restaurar: async (pessoa_id: number, numero_processo: string): Promise<{ status: string }> => {
+        const response = await api.delete('/v1/oportunidades/descartar', { data: { pessoa_id, numero_processo } });
         return response.data;
     },
 };

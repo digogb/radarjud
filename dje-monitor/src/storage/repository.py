@@ -13,7 +13,7 @@ from typing import Optional
 from sqlalchemy import create_engine, func
 from sqlalchemy.orm import Session, sessionmaker, joinedload
 
-from .models import Base, CPFMonitorado, DiarioProcessado, Ocorrencia, PessoaMonitorada, PublicacaoMonitorada, Alerta, PadraoOportunidade
+from .models import Base, CPFMonitorado, DiarioProcessado, Ocorrencia, PessoaMonitorada, PublicacaoMonitorada, Alerta, PadraoOportunidade, ClassificacaoProcesso, OportunidadeDescartada
 
 logger = logging.getLogger(__name__)
 
@@ -1157,6 +1157,196 @@ class DiarioRepository:
                 )
                 .first()
             ) is not None
+
+    # ===== Classificações de Processo (IA) =====
+
+    def salvar_classificacao(
+        self,
+        pessoa_id: int,
+        numero_processo: str,
+        papel: str,
+        veredicto: str | None,
+        valor: str | None,
+        justificativa: str | None,
+        total_pubs: int,
+    ) -> dict:
+        """Upsert de classificação de processo. Atualiza se já existir."""
+        digits = "".join(c for c in numero_processo if c.isdigit())
+        with self.get_session() as session:
+            classif = (
+                session.query(ClassificacaoProcesso)
+                .filter(
+                    ClassificacaoProcesso.pessoa_id == pessoa_id,
+                    ClassificacaoProcesso.numero_processo == digits,
+                )
+                .first()
+            )
+            if classif:
+                classif.papel = papel
+                classif.veredicto = veredicto
+                classif.valor = valor
+                classif.justificativa = justificativa
+                classif.total_pubs = total_pubs
+                classif.atualizado_em = datetime.utcnow()
+            else:
+                classif = ClassificacaoProcesso(
+                    pessoa_id=pessoa_id,
+                    numero_processo=digits,
+                    papel=papel,
+                    veredicto=veredicto,
+                    valor=valor,
+                    justificativa=justificativa,
+                    total_pubs=total_pubs,
+                )
+                session.add(classif)
+            session.commit()
+            session.refresh(classif)
+            return {
+                "id": classif.id,
+                "pessoa_id": classif.pessoa_id,
+                "numero_processo": classif.numero_processo,
+                "papel": classif.papel,
+                "veredicto": classif.veredicto,
+                "valor": classif.valor,
+                "justificativa": classif.justificativa,
+                "total_pubs": classif.total_pubs,
+            }
+
+    def obter_classificacao(self, pessoa_id: int, numero_processo: str) -> dict | None:
+        """Retorna classificação de um processo, ou None se não existir."""
+        digits = "".join(c for c in numero_processo if c.isdigit())
+        with self.get_session() as session:
+            classif = (
+                session.query(ClassificacaoProcesso)
+                .filter(
+                    ClassificacaoProcesso.pessoa_id == pessoa_id,
+                    ClassificacaoProcesso.numero_processo == digits,
+                )
+                .first()
+            )
+            if not classif:
+                return None
+            return {
+                "pessoa_id": classif.pessoa_id,
+                "numero_processo": classif.numero_processo,
+                "papel": classif.papel,
+                "veredicto": classif.veredicto,
+                "valor": classif.valor,
+                "justificativa": classif.justificativa,
+                "total_pubs": classif.total_pubs,
+            }
+
+    def obter_classificacoes_batch(self, chaves: list[tuple[int, str]]) -> dict:
+        """Retorna classificações para múltiplos (pessoa_id, numero_processo).
+
+        Args:
+            chaves: lista de tuplas (pessoa_id, numero_processo)
+
+        Returns:
+            Dict {(pessoa_id, proc_digits): {papel, veredicto, valor, ...}}
+        """
+        if not chaves:
+            return {}
+        # Normalizar dígitos
+        chaves_norm = [(pid, "".join(c for c in proc if c.isdigit())) for pid, proc in chaves]
+        with self.get_session() as session:
+            from sqlalchemy import or_, and_, tuple_
+            classifs = (
+                session.query(ClassificacaoProcesso)
+                .filter(
+                    or_(
+                        *[
+                            and_(
+                                ClassificacaoProcesso.pessoa_id == pid,
+                                ClassificacaoProcesso.numero_processo == proc,
+                            )
+                            for pid, proc in chaves_norm
+                        ]
+                    )
+                )
+                .all()
+            )
+            result = {}
+            for c in classifs:
+                result[(c.pessoa_id, c.numero_processo)] = {
+                    "papel": c.papel,
+                    "veredicto": c.veredicto,
+                    "valor": c.valor,
+                    "justificativa": c.justificativa,
+                    "total_pubs": c.total_pubs,
+                }
+            return result
+
+    # ===== Oportunidades Descartadas pelo Usuário =====
+
+    def descartar_oportunidade(self, pessoa_id: int, numero_processo: str) -> None:
+        """Marca um processo como descartado pelo usuário. Ignora se já existe."""
+        digits = "".join(c for c in numero_processo if c.isdigit())
+        with self.get_session() as session:
+            existente = (
+                session.query(OportunidadeDescartada)
+                .filter_by(pessoa_id=pessoa_id, numero_processo=digits)
+                .first()
+            )
+            if not existente:
+                session.add(OportunidadeDescartada(pessoa_id=pessoa_id, numero_processo=digits))
+                session.commit()
+
+    def restaurar_oportunidade(self, pessoa_id: int, numero_processo: str) -> None:
+        """Remove o descarte de um processo."""
+        digits = "".join(c for c in numero_processo if c.isdigit())
+        with self.get_session() as session:
+            session.query(OportunidadeDescartada).filter_by(
+                pessoa_id=pessoa_id, numero_processo=digits
+            ).delete()
+            session.commit()
+
+    def obter_descartadas_batch(self, chaves: list[tuple[int, str]]) -> set:
+        """Retorna conjunto de (pessoa_id, proc_digits) que estão descartadas pelo usuário.
+
+        Args:
+            chaves: lista de tuplas (pessoa_id, numero_processo)
+
+        Returns:
+            Set de tuplas (pessoa_id, proc_digits)
+        """
+        if not chaves:
+            return set()
+        chaves_norm = [(pid, "".join(c for c in proc if c.isdigit())) for pid, proc in chaves]
+        with self.get_session() as session:
+            from sqlalchemy import or_, and_
+            descartadas = (
+                session.query(OportunidadeDescartada)
+                .filter(
+                    or_(
+                        *[
+                            and_(
+                                OportunidadeDescartada.pessoa_id == pid,
+                                OportunidadeDescartada.numero_processo == proc,
+                            )
+                            for pid, proc in chaves_norm
+                        ]
+                    )
+                )
+                .all()
+            )
+            return {(d.pessoa_id, d.numero_processo) for d in descartadas}
+
+    def contar_publicacoes_processo(self, pessoa_id: int, numero_processo: str) -> int:
+        """Conta publicações de um processo para uma pessoa (para invalidação de cache)."""
+        from sqlalchemy import func as sa_func
+        digits = "".join(c for c in numero_processo if c.isdigit())
+        with self.get_session() as session:
+            return (
+                session.query(sa_func.count(PublicacaoMonitorada.id))
+                .filter(
+                    PublicacaoMonitorada.pessoa_id == pessoa_id,
+                    sa_func.regexp_replace(
+                        PublicacaoMonitorada.numero_processo, "[^0-9]", "", "g"
+                    ) == digits,
+                )
+                .scalar() or 0
+            )
 
     # ===== Backfill / Reindexação Semântica =====
 

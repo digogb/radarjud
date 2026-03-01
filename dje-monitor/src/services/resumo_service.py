@@ -148,7 +148,7 @@ def gerar_resumo_processo(
     if pessoa_nome:
         linhas_contexto.append(
             f"**Parte monitorada**: {pessoa_nome} "
-            f"(ela é devedora em outro processo e estamos verificando se possui créditos a receber neste)"
+            f"(estamos verificando seu papel neste processo — pode ser credora ou devedora)"
         )
     if partes["ativo"]:
         linhas_contexto.append(f"**Polo ativo nas publicações**: {', '.join(partes['ativo'])}")

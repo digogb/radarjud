@@ -108,6 +108,10 @@ class Config:
     openai_api_key: str = os.getenv("DJE_OPENAI_API_KEY", "")
     openai_model: str = os.getenv("DJE_OPENAI_MODEL", "gpt-4o-mini")
 
+    # Classificação automática de credor/devedor
+    classif_max_pubs: int = int(os.getenv("DJE_CLASSIF_MAX_PUBS", "3"))
+    classif_max_chars: int = int(os.getenv("DJE_CLASSIF_MAX_CHARS", "500"))
+
     @property
     def telegram_habilitado(self) -> bool:
         return bool(self.telegram_bot_token and self.telegram_chat_id)

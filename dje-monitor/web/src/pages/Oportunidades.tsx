@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
 import { createPortal } from 'react-dom'
 import ReactMarkdown from 'react-markdown'
-import { TrendingUp, Search, ExternalLink, FileText, RefreshCw, AlertTriangle, Loader2, Clock, X, Calendar, ChevronDown, ChevronUp, Sparkles } from 'lucide-react'
+import { TrendingUp, Search, ExternalLink, FileText, AlertTriangle, Loader2, Clock, X, Calendar, ChevronDown, ChevronUp, Sparkles, UserX, RotateCcw } from 'lucide-react'
 import { oportunidadesApi, OportunidadeItem } from '../services/api'
 
 const PADROES_LABEL: Record<string, string> = {
@@ -52,6 +52,13 @@ interface OportunidadeGrupo {
   data_mais_recente: string
   total: number
   itens: OportunidadeItem[]
+  // Classificação IA
+  ia_papel: string | null
+  ia_veredicto: string | null
+  ia_valor: string | null
+  ia_justificativa: string | null
+  // Descarte manual
+  descartado_por_usuario: boolean
 }
 
 function agruparPorProcesso(itens: OportunidadeItem[]): OportunidadeGrupo[] {
@@ -70,6 +77,11 @@ function agruparPorProcesso(itens: OportunidadeItem[]): OportunidadeGrupo[] {
         data_mais_recente: item.data_disponibilizacao,
         total: 0,
         itens: [],
+        ia_papel: item.ia_papel ?? null,
+        ia_veredicto: item.ia_veredicto ?? null,
+        ia_valor: item.ia_valor ?? null,
+        ia_justificativa: item.ia_justificativa ?? null,
+        descartado_por_usuario: item.descartado_por_usuario ?? false,
       })
     }
     const grupo = mapa.get(key)!
@@ -111,12 +123,17 @@ function GrupoCard({
   selecionado,
   onClick,
   formatarData,
+  onDescartar,
+  onRestaurar,
 }: {
   grupo: OportunidadeGrupo
   selecionado: boolean
   onClick: () => void
   formatarData: (data: string) => string
+  onDescartar: (grupo: OportunidadeGrupo) => void
+  onRestaurar: (grupo: OportunidadeGrupo) => void
 }) {
+  const [hovered, setHovered] = useState(false)
   const primeiroItem = grupo.itens[0]
   return (
     <div
@@ -128,9 +145,10 @@ function GrupoCard({
         padding: '18px 24px',
         cursor: 'pointer',
         transition: 'border-color var(--transition-fast), background var(--transition-fast)',
+        position: 'relative',
       }}
-      onMouseEnter={e => { if (!selecionado) e.currentTarget.style.borderColor = 'var(--warning)' }}
-      onMouseLeave={e => { if (!selecionado) e.currentTarget.style.borderColor = 'var(--glass-border)' }}
+      onMouseEnter={e => { if (!selecionado) e.currentTarget.style.borderColor = 'var(--warning)'; setHovered(true) }}
+      onMouseLeave={e => { if (!selecionado) e.currentTarget.style.borderColor = 'var(--glass-border)'; setHovered(false) }}
     >
       {/* Cabeçalho */}
       <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 12, marginBottom: 10 }}>
@@ -151,16 +169,42 @@ function GrupoCard({
                 {grupo.tribunal}
               </span>
             )}
-            <span style={{
-              background: grupo.polo_pessoa === 'ativo' ? 'var(--success-muted)' : 'var(--glass-border)',
-              color: grupo.polo_pessoa === 'ativo' ? 'var(--success)' : 'var(--text-muted)',
-              borderRadius: 6,
-              padding: '2px 8px',
-              fontSize: '0.73rem',
-              fontWeight: 600,
-            }}>
-              {grupo.polo_pessoa === 'ativo' ? 'Credor' : 'Polo indefinido'}
-            </span>
+            {(() => {
+              // Usa classificação IA quando disponível, senão fallback polo_pessoa
+              const papelIA = grupo.ia_papel
+              const info = papelIA
+                ? PAPEL_INFO[papelIA] ?? { label: papelIA, bg: 'var(--glass-border)', color: 'var(--text-muted)' }
+                : grupo.polo_pessoa === 'ativo'
+                  ? { label: 'Credor', bg: 'var(--success-muted)', color: 'var(--success)' }
+                  : { label: 'Polo indefinido', bg: 'var(--glass-border)', color: 'var(--text-muted)' }
+              return (
+                <span style={{
+                  background: info.bg,
+                  color: info.color,
+                  borderRadius: 6,
+                  padding: '2px 8px',
+                  fontSize: '0.73rem',
+                  fontWeight: 600,
+                }}>
+                  {papelIA ? `${info.label} (IA)` : info.label}
+                </span>
+              )
+            })()}
+            {grupo.ia_veredicto && (() => {
+              const vInfo = VEREDICTO_INFO[grupo.ia_veredicto]
+              return vInfo ? (
+                <span style={{
+                  background: vInfo.bg,
+                  color: vInfo.color,
+                  borderRadius: 6,
+                  padding: '2px 8px',
+                  fontSize: '0.73rem',
+                  fontWeight: 600,
+                }}>
+                  {vInfo.label}
+                </span>
+              ) : null
+            })()}
             {grupo.total > 1 && (
               <span style={{
                 background: 'var(--glass-border)',
@@ -210,9 +254,42 @@ function GrupoCard({
       {/* Rodapé */}
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
         <span style={{ fontSize: '0.78rem', color: 'var(--text-muted)' }}>{primeiroItem.orgao}</span>
-        <span style={{ fontSize: '0.78rem', color: 'var(--primary)', display: 'flex', alignItems: 'center', gap: 4 }}>
-          {grupo.total > 1 ? `Ver ${grupo.total} publicações →` : 'Ver detalhes →'}
-        </span>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+          {hovered && (
+            grupo.descartado_por_usuario ? (
+              <button
+                onClick={e => { e.stopPropagation(); onRestaurar(grupo) }}
+                title="Restaurar processo"
+                style={{
+                  display: 'flex', alignItems: 'center', gap: 4,
+                  padding: '3px 9px', borderRadius: 6,
+                  border: '1px solid var(--glass-border)',
+                  background: 'var(--glass-bg)', color: 'var(--text-secondary)',
+                  fontSize: '0.75rem', fontWeight: 600, cursor: 'pointer',
+                }}
+              >
+                <RotateCcw size={12} /> Restaurar
+              </button>
+            ) : (
+              <button
+                onClick={e => { e.stopPropagation(); onDescartar(grupo) }}
+                title="Descartar este processo"
+                style={{
+                  display: 'flex', alignItems: 'center', gap: 4,
+                  padding: '3px 9px', borderRadius: 6,
+                  border: '1px solid var(--danger, #dc2626)',
+                  background: 'var(--danger-muted, #fee2e2)', color: 'var(--danger, #dc2626)',
+                  fontSize: '0.75rem', fontWeight: 600, cursor: 'pointer',
+                }}
+              >
+                <UserX size={12} /> Descartar
+              </button>
+            )
+          )}
+          <span style={{ fontSize: '0.78rem', color: 'var(--primary)', display: 'flex', alignItems: 'center', gap: 4 }}>
+            {grupo.total > 1 ? `Ver ${grupo.total} publicações →` : 'Ver detalhes →'}
+          </span>
+        </div>
       </div>
     </div>
   )
@@ -431,10 +508,19 @@ const ORDENACOES: { value: Ordenacao; label: string }[] = [
   { value: 'publicacoes', label: 'Mais publicações' },
 ]
 
+/** Converte dd/mm/yyyy ou yyyy-mm-dd para yyyy-mm-dd (comparável como string). */
+function dataSortavel(d: string): string {
+  if (!d) return '0000-00-00'
+  if (d.length === 10 && d[4] === '-') return d // já yyyy-mm-dd
+  const p = d.split('/')
+  if (p.length === 3) return `${p[2]}-${p[1]}-${p[0]}`
+  return d
+}
+
 function ordenarGrupos(grupos: OportunidadeGrupo[], ord: Ordenacao): OportunidadeGrupo[] {
   return [...grupos].sort((a, b) => {
-    if (ord === 'data_desc') return b.data_mais_recente.localeCompare(a.data_mais_recente)
-    if (ord === 'data_asc')  return a.data_mais_recente.localeCompare(b.data_mais_recente)
+    if (ord === 'data_desc') return dataSortavel(b.data_mais_recente).localeCompare(dataSortavel(a.data_mais_recente))
+    if (ord === 'data_asc')  return dataSortavel(a.data_mais_recente).localeCompare(dataSortavel(b.data_mais_recente))
     if (ord === 'nome')      return a.pessoa_nome.localeCompare(b.pessoa_nome, 'pt-BR')
     if (ord === 'publicacoes') return b.total - a.total
     return 0
@@ -458,16 +544,32 @@ export default function Oportunidades() {
   const [filtroNome, setFiltroNome] = useState('')
   const [filtroProcesso, setFiltroProcesso] = useState('')
   const [ordenacao, setOrdenacao] = useState<Ordenacao>('data_desc')
+  const [abaAtiva, setAbaAtiva] = useState<'oportunidades' | 'descartados' | 'descartados_usuario'>('oportunidades')
   const scrollPosRef = useRef(0)
 
+  const todosGrupos = agruparPorProcesso(itens).filter(g => {
+    const nome = filtroNome.trim().toLowerCase()
+    const proc = filtroProcesso.trim().toLowerCase()
+    if (nome && !g.pessoa_nome.toLowerCase().includes(nome)) return false
+    if (proc && !(g.numero_processo ?? '').toLowerCase().includes(proc)) return false
+    return true
+  })
+
+  // Três categorias: descartado pelo usuário > descartado pela IA > oportunidade
+  const isDescartadoUsuario = (g: OportunidadeGrupo) => g.descartado_por_usuario === true
+  const isDescartadoIA = (g: OportunidadeGrupo) =>
+    !isDescartadoUsuario(g) && (g.ia_papel === 'DEVEDOR' || g.ia_veredicto === 'SEM_CREDITO')
+
+  const gruposOportunidades = todosGrupos.filter(g => !isDescartadoUsuario(g) && !isDescartadoIA(g))
+  const gruposDescartados = todosGrupos.filter(g => isDescartadoIA(g))
+  const gruposDescartadosUsuario = todosGrupos.filter(g => isDescartadoUsuario(g))
+
   const grupos = ordenarGrupos(
-    agruparPorProcesso(itens).filter(g => {
-      const nome = filtroNome.trim().toLowerCase()
-      const proc = filtroProcesso.trim().toLowerCase()
-      if (nome && !g.pessoa_nome.toLowerCase().includes(nome)) return false
-      if (proc && !(g.numero_processo ?? '').toLowerCase().includes(proc)) return false
-      return true
-    }),
+    abaAtiva === 'oportunidades'
+      ? gruposOportunidades
+      : abaAtiva === 'descartados'
+        ? gruposDescartados
+        : gruposDescartadosUsuario,
     ordenacao
   )
 
@@ -513,13 +615,46 @@ export default function Oportunidades() {
 
   const varrerAgora = async () => {
     setVarrendo(true)
+    setError('')
     try {
       await oportunidadesApi.varrer()
-      setTimeout(() => buscar(dias), 2000)
+      // Aguardar classificação LLM processar (varredura + classificação ~10-15s)
+      await new Promise(r => setTimeout(r, 12000))
+      await buscar(dias)
     } catch {
       setError('Erro ao iniciar varredura.')
     } finally {
       setVarrendo(false)
+    }
+  }
+
+  const handleDescartar = async (grupo: OportunidadeGrupo) => {
+    if (!grupo.numero_processo) return
+    try {
+      await oportunidadesApi.descartar(grupo.pessoa_id, grupo.numero_processo)
+      setItens(prev => prev.map(item =>
+        item.pessoa_id === grupo.pessoa_id && item.numero_processo === grupo.numero_processo
+          ? { ...item, descartado_por_usuario: true }
+          : item
+      ))
+      if (grupoSelecionado?.key === grupo.key) setGrupoSelecionado(null)
+    } catch {
+      setError('Erro ao descartar processo.')
+    }
+  }
+
+  const handleRestaurar = async (grupo: OportunidadeGrupo) => {
+    if (!grupo.numero_processo) return
+    try {
+      await oportunidadesApi.restaurar(grupo.pessoa_id, grupo.numero_processo)
+      setItens(prev => prev.map(item =>
+        item.pessoa_id === grupo.pessoa_id && item.numero_processo === grupo.numero_processo
+          ? { ...item, descartado_por_usuario: false }
+          : item
+      ))
+      if (grupoSelecionado?.key === grupo.key) setGrupoSelecionado(null)
+    } catch {
+      setError('Erro ao restaurar processo.')
     }
   }
 
@@ -585,8 +720,8 @@ export default function Oportunidades() {
           >
             {varrendo
               ? <Loader2 size={16} style={{ animation: 'spin 1s linear infinite' }} />
-              : <RefreshCw size={16} />}
-            Varrer agora
+              : <Sparkles size={16} />}
+            {varrendo ? 'Analisando...' : 'Analisar processos'}
           </button>
         </div>
       </div>
@@ -657,6 +792,106 @@ export default function Oportunidades() {
         </div>
       )}
 
+      {/* Abas */}
+      {buscou && !loading && todosGrupos.length > 0 && (
+        <div style={{ display: 'flex', gap: 0, marginBottom: 20, borderBottom: '2px solid var(--glass-border)' }}>
+          <button
+            onClick={() => setAbaAtiva('oportunidades')}
+            style={{
+              padding: '10px 20px',
+              fontSize: '0.9rem',
+              fontWeight: abaAtiva === 'oportunidades' ? 700 : 500,
+              color: abaAtiva === 'oportunidades' ? 'var(--warning)' : 'var(--text-muted)',
+              background: 'transparent',
+              border: 'none',
+              borderBottom: abaAtiva === 'oportunidades' ? '2px solid var(--warning)' : '2px solid transparent',
+              marginBottom: -2,
+              cursor: 'pointer',
+              display: 'flex',
+              alignItems: 'center',
+              gap: 8,
+            }}
+          >
+            <TrendingUp size={16} />
+            Oportunidades
+            <span style={{
+              background: abaAtiva === 'oportunidades' ? 'var(--warning)' : 'var(--glass-border)',
+              color: abaAtiva === 'oportunidades' ? '#000' : 'var(--text-muted)',
+              borderRadius: 10,
+              padding: '1px 8px',
+              fontSize: '0.75rem',
+              fontWeight: 700,
+            }}>
+              {gruposOportunidades.length}
+            </span>
+          </button>
+          <button
+            onClick={() => setAbaAtiva('descartados')}
+            style={{
+              padding: '10px 20px',
+              fontSize: '0.9rem',
+              fontWeight: abaAtiva === 'descartados' ? 700 : 500,
+              color: abaAtiva === 'descartados' ? 'var(--danger, #dc2626)' : 'var(--text-muted)',
+              background: 'transparent',
+              border: 'none',
+              borderBottom: abaAtiva === 'descartados' ? '2px solid var(--danger, #dc2626)' : '2px solid transparent',
+              marginBottom: -2,
+              cursor: 'pointer',
+              display: 'flex',
+              alignItems: 'center',
+              gap: 8,
+            }}
+          >
+            <AlertTriangle size={16} />
+            Descartados pela IA
+            {gruposDescartados.length > 0 && (
+              <span style={{
+                background: abaAtiva === 'descartados' ? 'var(--danger-muted, #fee2e2)' : 'var(--glass-border)',
+                color: abaAtiva === 'descartados' ? 'var(--danger, #dc2626)' : 'var(--text-muted)',
+                borderRadius: 10,
+                padding: '1px 8px',
+                fontSize: '0.75rem',
+                fontWeight: 700,
+              }}>
+                {gruposDescartados.length}
+              </span>
+            )}
+          </button>
+          <button
+            onClick={() => setAbaAtiva('descartados_usuario')}
+            style={{
+              padding: '10px 20px',
+              fontSize: '0.9rem',
+              fontWeight: abaAtiva === 'descartados_usuario' ? 700 : 500,
+              color: abaAtiva === 'descartados_usuario' ? 'var(--text-secondary)' : 'var(--text-muted)',
+              background: 'transparent',
+              border: 'none',
+              borderBottom: abaAtiva === 'descartados_usuario' ? '2px solid var(--text-secondary)' : '2px solid transparent',
+              marginBottom: -2,
+              cursor: 'pointer',
+              display: 'flex',
+              alignItems: 'center',
+              gap: 8,
+            }}
+          >
+            <UserX size={16} />
+            Descartados por mim
+            {gruposDescartadosUsuario.length > 0 && (
+              <span style={{
+                background: 'var(--glass-border)',
+                color: 'var(--text-muted)',
+                borderRadius: 10,
+                padding: '1px 8px',
+                fontSize: '0.75rem',
+                fontWeight: 700,
+              }}>
+                {gruposDescartadosUsuario.length}
+              </span>
+            )}
+          </button>
+        </div>
+      )}
+
       {/* Resultados */}
       {loading ? (
         <div style={{ textAlign: 'center', padding: '60px 0', color: 'var(--text-secondary)' }}>
@@ -665,19 +900,43 @@ export default function Oportunidades() {
         </div>
       ) : buscou && grupos.length === 0 ? (
         <div style={{ textAlign: 'center', padding: '60px 0', color: 'var(--text-secondary)' }}>
-          <TrendingUp size={40} style={{ marginBottom: 16, opacity: 0.3 }} />
-          <p style={{ fontSize: '1.1rem', marginBottom: 8 }}>Nenhuma oportunidade detectada</p>
-          <p style={{ fontSize: '0.9rem', opacity: 0.7 }}>
-            Nenhuma publicação no período selecionado contém sinais de recebimento de valores.
-          </p>
+          {abaAtiva === 'descartados' ? (
+            <>
+              <AlertTriangle size={40} style={{ marginBottom: 16, opacity: 0.3 }} />
+              <p style={{ fontSize: '1.1rem', marginBottom: 8 }}>Nenhum processo descartado pela IA</p>
+              <p style={{ fontSize: '0.9rem', opacity: 0.7 }}>
+                Processos classificados como "Devedor" ou "Sem Crédito" aparecerão aqui.
+              </p>
+            </>
+          ) : abaAtiva === 'descartados_usuario' ? (
+            <>
+              <UserX size={40} style={{ marginBottom: 16, opacity: 0.3 }} />
+              <p style={{ fontSize: '1.1rem', marginBottom: 8 }}>Nenhum processo descartado por você</p>
+              <p style={{ fontSize: '0.9rem', opacity: 0.7 }}>
+                Passe o mouse sobre um card e clique em "Descartar" para mover processos irrelevantes para cá.
+              </p>
+            </>
+          ) : (
+            <>
+              <TrendingUp size={40} style={{ marginBottom: 16, opacity: 0.3 }} />
+              <p style={{ fontSize: '1.1rem', marginBottom: 8 }}>Nenhuma oportunidade detectada</p>
+              <p style={{ fontSize: '0.9rem', opacity: 0.7 }}>
+                Nenhuma publicação no período selecionado contém sinais de recebimento de valores.
+              </p>
+            </>
+          )}
         </div>
       ) : grupos.length > 0 ? (
         <>
           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 16 }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: 8, color: 'var(--text-secondary)', fontSize: '0.9rem' }}>
-              <TrendingUp size={16} style={{ color: 'var(--warning)' }} />
+              {abaAtiva === 'oportunidades'
+                ? <TrendingUp size={16} style={{ color: 'var(--warning)' }} />
+                : abaAtiva === 'descartados'
+                  ? <AlertTriangle size={16} style={{ color: 'var(--danger, #dc2626)' }} />
+                  : <UserX size={16} style={{ color: 'var(--text-secondary)' }} />}
               <span>
-                <strong style={{ color: 'var(--warning)' }}>{grupos.length}</strong> processo{grupos.length !== 1 ? 's' : ''} com oportunidades
+                <strong style={{ color: abaAtiva === 'oportunidades' ? 'var(--warning)' : abaAtiva === 'descartados' ? 'var(--danger, #dc2626)' : 'var(--text-secondary)' }}>{grupos.length}</strong> processo{grupos.length !== 1 ? 's' : ''} {abaAtiva === 'oportunidades' ? 'com oportunidades' : abaAtiva === 'descartados' ? 'descartados pela IA' : 'descartados por você'}
                 {(() => {
                   const totalPubs = grupos.reduce((acc, g) => acc + g.total, 0)
                   return totalPubs !== grupos.length
@@ -686,7 +945,7 @@ export default function Oportunidades() {
                 })()}
                 {(filtroNome || filtroProcesso) && (
                   <span style={{ marginLeft: 8, color: 'var(--text-muted)', fontSize: '0.82rem' }}>
-                    — filtrado de {agruparPorProcesso(itens).length} processos
+                    — filtrado de {todosGrupos.length} processos
                   </span>
                 )}
               </span>
@@ -713,6 +972,8 @@ export default function Oportunidades() {
                 selecionado={grupoSelecionado?.key === grupo.key}
                 onClick={() => { setGrupoSelecionado(grupo); setResumo(null); setResumoMeta(null); setResumoFromCache(null); setResumoErro('') }}
                 formatarData={formatarData}
+                onDescartar={handleDescartar}
+                onRestaurar={handleRestaurar}
               />
             ))}
           </div>
@@ -747,6 +1008,44 @@ export default function Oportunidades() {
                   <p className="drawer-processo-numero" style={{ margin: 0 }}>
                     {grupoSelecionado.numero_processo || '—'}
                   </p>
+                  {/* Badges IA no drawer */}
+                  {(grupoSelecionado.ia_papel || grupoSelecionado.ia_veredicto || grupoSelecionado.ia_valor) && (
+                    <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginTop: 8 }}>
+                      {grupoSelecionado.ia_papel && (() => {
+                        const info = PAPEL_INFO[grupoSelecionado.ia_papel]
+                        return info ? (
+                          <span style={{
+                            padding: '2px 9px', borderRadius: 20,
+                            fontSize: '0.72rem', fontWeight: 600,
+                            background: info.bg, color: info.color,
+                          }}>
+                            {info.label} (IA)
+                          </span>
+                        ) : null
+                      })()}
+                      {grupoSelecionado.ia_veredicto && (() => {
+                        const info = VEREDICTO_INFO[grupoSelecionado.ia_veredicto]
+                        return info ? (
+                          <span style={{
+                            padding: '2px 9px', borderRadius: 20,
+                            fontSize: '0.72rem', fontWeight: 600,
+                            background: info.bg, color: info.color,
+                          }}>
+                            {info.label}
+                          </span>
+                        ) : null
+                      })()}
+                      {grupoSelecionado.ia_valor && grupoSelecionado.ia_valor.toLowerCase() !== 'não identificado' && (
+                        <span style={{
+                          padding: '2px 9px', borderRadius: 20,
+                          fontSize: '0.72rem', fontWeight: 600,
+                          background: 'var(--primary-muted)', color: 'var(--primary)',
+                        }}>
+                          {grupoSelecionado.ia_valor}
+                        </span>
+                      )}
+                    </div>
+                  )}
                 </div>
               </div>
               <button onClick={() => setGrupoSelecionado(null)} className="drawer-close-btn" title="Fechar">
@@ -816,6 +1115,32 @@ export default function Oportunidades() {
                     Abrir processo
                   </button>
                 )}
+                {grupoSelecionado.descartado_por_usuario ? (
+                  <button
+                    onClick={() => handleRestaurar(grupoSelecionado)}
+                    className="btn btn-secondary"
+                    style={{ fontSize: '0.85rem', padding: '8px 16px' }}
+                  >
+                    <RotateCcw size={15} />
+                    Restaurar
+                  </button>
+                ) : (
+                  <button
+                    onClick={() => handleDescartar(grupoSelecionado)}
+                    style={{
+                      display: 'flex', alignItems: 'center', gap: 7,
+                      fontSize: '0.85rem', padding: '8px 16px',
+                      borderRadius: 8,
+                      border: '1px solid var(--danger, #dc2626)',
+                      background: 'var(--danger-muted, #fee2e2)',
+                      color: 'var(--danger, #dc2626)',
+                      fontWeight: 600, cursor: 'pointer',
+                    }}
+                  >
+                    <UserX size={15} />
+                    Descartar
+                  </button>
+                )}
                 </div>
 
                 {resumoErro && (
@@ -845,7 +1170,7 @@ export default function Oportunidades() {
                   </div>
                 </div>
                 <div style={{ padding: '12px 24px 0', display: 'flex', flexDirection: 'column', gap: 10 }}>
-                  {grupoSelecionado.itens.map(item => (
+                  {[...grupoSelecionado.itens].sort((a, b) => dataSortavel(b.data_disponibilizacao).localeCompare(dataSortavel(a.data_disponibilizacao))).map(item => (
                     <PublicacaoDrawerItem
                       key={item.id}
                       item={item}
