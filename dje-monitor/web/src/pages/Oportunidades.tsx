@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback, useRef } from 'react'
 import { createPortal } from 'react-dom'
 import ReactMarkdown from 'react-markdown'
 import { TrendingUp, Search, ExternalLink, FileText, AlertTriangle, Loader2, Clock, X, Calendar, ChevronDown, ChevronUp, Sparkles, UserX, RotateCcw } from 'lucide-react'
-import { oportunidadesApi, OportunidadeItem } from '../services/api'
+import { oportunidadesApi, OportunidadeItem, api } from '../services/api'
 
 const PADROES_LABEL: Record<string, string> = {
   'mandado de levantamento': 'Mandado de Levantamento',
@@ -660,9 +660,8 @@ export default function Oportunidades() {
 
   // Badge de novas oportunidades
   useEffect(() => {
-    fetch('/api/v1/alertas/nao-lidos/count?tipo=OPORTUNIDADE_CREDITO')
-      .then(r => r.json())
-      .then(d => setNovasOportunidades(d.count ?? 0))
+    api.get('/v1/alertas/nao-lidos/count', { params: { tipo: 'OPORTUNIDADE_CREDITO' } })
+      .then(r => setNovasOportunidades(r.data.count ?? 0))
       .catch(() => {})
   }, [])
 
