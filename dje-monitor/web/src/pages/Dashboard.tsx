@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { FileText, Eye, Bell, Clock, TrendingUp, RefreshCw, AlertCircle, LayoutDashboard } from 'lucide-react'
-import { dashboardApi, syncApi, DashboardResumo, AlteracaoDetectada } from '../services/api'
+import { FileText, Eye, Bell, Clock, TrendingUp, RefreshCw, AlertCircle, LayoutDashboard, DollarSign } from 'lucide-react'
+import { dashboardApi, syncApi, oportunidadesApi, DashboardResumo, AlteracaoDetectada } from '../services/api'
 import { formatDistanceToNow } from 'date-fns'
 import { ptBR } from 'date-fns/locale'
 
@@ -9,6 +9,7 @@ export default function Dashboard() {
   const navigate = useNavigate()
   const [resumo, setResumo] = useState<DashboardResumo | null>(null)
   const [alteracoes, setAlteracoes] = useState<AlteracaoDetectada[]>([])
+  const [totalOportunidades, setTotalOportunidades] = useState(0)
   const [loading, setLoading] = useState(true)
   const [syncing, setSyncing] = useState(false)
 
@@ -25,6 +26,7 @@ export default function Dashboard() {
       ])
       setResumo(resumoData)
       setAlteracoes(alteracoesData)
+      oportunidadesApi.buscar().then(d => setTotalOportunidades(d.total)).catch(() => {})
     } catch (error) {
       console.error('Erro ao carregar dashboard:', error)
     } finally {
@@ -117,9 +119,23 @@ export default function Dashboard() {
           <div className="stat-label">Novas Alterações</div>
         </div>
 
-        <div className="stat-card success animate-fadeIn delay-4">
+        <div
+          className="stat-card success animate-fadeIn delay-4"
+          style={{ cursor: 'pointer' }}
+          onClick={() => navigate('/oportunidades')}
+        >
           <div className="stat-header">
             <div className="stat-icon success">
+              <DollarSign size={24} />
+            </div>
+          </div>
+          <div className="stat-value">{totalOportunidades}</div>
+          <div className="stat-label">Oportunidades de Crédito</div>
+        </div>
+
+        <div className="stat-card info animate-fadeIn delay-5">
+          <div className="stat-header">
+            <div className="stat-icon info">
               <Clock size={24} />
             </div>
           </div>
