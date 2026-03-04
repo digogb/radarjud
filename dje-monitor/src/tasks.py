@@ -458,7 +458,7 @@ def reindexar_tudo_task(tenant_id: str | None = None) -> None:
 
     # 1. Indexar publicações em batch
     offset = 0
-    batch_size = 100
+    batch_size = 20
     total = 0
 
     while True:
@@ -478,7 +478,7 @@ def reindexar_tudo_task(tenant_id: str | None = None) -> None:
 
     # 2. Indexar processos em batch paginado
     proc_offset = 0
-    proc_batch_size = 50
+    proc_batch_size = 10
     total_proc = 0
 
     while True:
