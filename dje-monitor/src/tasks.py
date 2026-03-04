@@ -19,6 +19,7 @@ sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 from config import Config
 from storage.repository import DiarioRepository
 from services.monitor_service import MonitorService
+from db.tenant_context import set_current_tenant
 
 logger = logging.getLogger(__name__)
 
@@ -48,6 +49,10 @@ def _make_service() -> MonitorService:
     return MonitorService(repo=repo, config=config)
 
 
+def _make_repo() -> DiarioRepository:
+    return DiarioRepository(config.database_url)
+
+
 # ---------------------------------------------------------------------------
 # Actors
 # ---------------------------------------------------------------------------
@@ -59,8 +64,9 @@ def _make_service() -> MonitorService:
     max_backoff=60_000,
     time_limit=300_000,  # 5 min por pessoa
 )
-def verificar_pessoa_task(pessoa_id: int) -> None:
+def verificar_pessoa_task(tenant_id: str, pessoa_id: int) -> None:
     """Verifica uma pessoa específica buscando novas publicações no DJe."""
+    set_current_tenant(tenant_id)
     service = _make_service()
     pessoa = service.repo.obter_pessoa_orm(pessoa_id)
     if not pessoa:
@@ -81,8 +87,9 @@ def verificar_pessoa_task(pessoa_id: int) -> None:
     max_retries=1,
     time_limit=600_000,  # 10 min para first check
 )
-def first_check_task(pessoa_id: int, nome: str, tribunal_filtro: str | None = None) -> None:
+def first_check_task(tenant_id: str, pessoa_id: int, nome: str, tribunal_filtro: str | None = None) -> None:
     """Executa first check ao cadastrar uma pessoa (salva publicações sem gerar alertas)."""
+    set_current_tenant(tenant_id)
     service = _make_service()
     total = service.first_check(pessoa_id, nome, tribunal_filtro)
     logger.info(f"first_check_task: {nome} — {total} publicação(ões) salvas")
@@ -96,29 +103,46 @@ def first_check_task(pessoa_id: int, nome: str, tribunal_filtro: str | None = No
 def agendar_verificacoes_task() -> None:
     """
     Chamada pelo APScheduler da API a cada N minutos.
-    Consulta pessoas_para_verificar() e enfileira uma task por pessoa.
+    Itera por todos os tenants ativos e enfileira verificações por tenant.
     """
+    from sqlalchemy import select
+    from storage.models import Tenant, PessoaMonitorada
+
+    # Usar repo sem tenant (superuser bypassa RLS)
     repo = DiarioRepository(config.database_url)
 
-    # Desativa expirados antes de enfileirar
-    try:
-        expirados = repo.desativar_expirados()
-        if expirados > 0:
-            logger.info(f"agendar_verificacoes_task: {expirados} monitoramento(s) expirado(s) desativado(s)")
-    except Exception as e:
-        logger.error(f"agendar_verificacoes_task: erro ao desativar expirados: {e}")
+    # Buscar todos os tenants ativos (sem RLS)
+    with repo.get_session(tenant_id=None) as session:
+        tenants = list(session.execute(
+            select(Tenant).where(Tenant.is_active == True)
+        ).scalars().all())
 
-    # Varrer oportunidades de crédito a cada ciclo de sync
-    varrer_oportunidades_task.send()
-
-    pessoas = repo.pessoas_para_verificar_batch()
-    if not pessoas:
-        logger.debug("agendar_verificacoes_task: nenhuma pessoa para verificar")
+    if not tenants:
+        logger.debug("agendar_verificacoes_task: nenhum tenant ativo")
         return
 
-    logger.info(f"agendar_verificacoes_task: enfileirando {len(pessoas)} pessoa(s)")
-    for pessoa in pessoas:
-        verificar_pessoa_task.send(pessoa.id)
+    for tenant in tenants:
+        tid = str(tenant.id)
+        try:
+            with repo.get_session(tenant_id=tid) as session:
+                expirados = repo.desativar_expirados()
+                if expirados > 0:
+                    logger.info(
+                        f"agendar_verificacoes_task: tenant={tid} {expirados} expirado(s) desativado(s)"
+                    )
+        except Exception as e:
+            logger.error(f"agendar_verificacoes_task: erro ao desativar expirados tenant={tid}: {e}")
+
+        # Varrer oportunidades de crédito por tenant
+        varrer_oportunidades_task.send(tid)
+
+        pessoas = repo.pessoas_para_verificar_batch()
+        if not pessoas:
+            continue
+
+        logger.info(f"agendar_verificacoes_task: tenant={tid} enfileirando {len(pessoas)} pessoa(s)")
+        for pessoa in pessoas:
+            verificar_pessoa_task.send(tid, pessoa.id)
 
 
 @dramatiq.actor(
@@ -158,13 +182,15 @@ def _data_gte(data_str: str, cutoff_str: str) -> bool:
     max_retries=1,
     time_limit=300_000,  # 5 min (inclui classificação LLM)
 )
-def varrer_oportunidades_task() -> None:
+def varrer_oportunidades_task(tenant_id: str | None = None) -> None:
     """Varre publicações recentes buscando sinais de recebimento de valores.
     Gera alertas especiais (OPORTUNIDADE_CREDITO) para cada match ainda não alertado.
     Aplica reranking semântico para descartar falsos positivos antes de criar alertas.
     Enfileira classificação LLM para cada processo distinto detectado.
     """
     from services.embedding_service import rerank_oportunidades
+    if tenant_id:
+        set_current_tenant(tenant_id)
     repo = DiarioRepository(config.database_url)
 
     # Buscar janela ampla (90 dias) para classificação de todos os processos visíveis na UI
@@ -173,7 +199,7 @@ def varrer_oportunidades_task() -> None:
     # Filtro semântico: pontuar candidatos e descartar falsos positivos
     if candidatos_amplo:
         pub_ids = [op["id"] for op in candidatos_amplo]
-        scores = rerank_oportunidades(pub_ids, threshold=0.45)
+        scores = rerank_oportunidades(pub_ids, threshold=0.45, tenant_id=tenant_id)
         oportunidades_amplo = [op for op in candidatos_amplo if op["id"] in scores]
         for op in oportunidades_amplo:
             op["score_semantico"] = scores[op["id"]]
@@ -203,7 +229,7 @@ def varrer_oportunidades_task() -> None:
             total_pubs = repo.contar_publicacoes_processo(pid, proc)
             if classif and classif["total_pubs"] == total_pubs:
                 continue  # Classificação ainda válida
-            classificar_processo_task.send(pid, proc)
+            classificar_processo_task.send(tenant_id or "", pid, proc)
             enfileirados += 1
 
         if enfileirados:
@@ -266,7 +292,7 @@ def _classif_cache_key(pessoa_id: int, numero_processo: str, total_pubs: int) ->
     min_backoff=5_000,
     time_limit=60_000,  # 1 min
 )
-def classificar_processo_task(pessoa_id: int, numero_processo: str) -> None:
+def classificar_processo_task(tenant_id: str, pessoa_id: int, numero_processo: str) -> None:
     """Classifica credor/devedor de um processo via LLM (OpenAI).
 
     Verifica cache Redis → DB → chama OpenAI se necessário.
@@ -277,6 +303,8 @@ def classificar_processo_task(pessoa_id: int, numero_processo: str) -> None:
     if not config.openai_habilitado:
         return
 
+    if tenant_id:
+        set_current_tenant(tenant_id)
     repo = DiarioRepository(config.database_url)
     publicacoes = repo.buscar_publicacoes_processo(pessoa_id, numero_processo)
     if not publicacoes:
@@ -368,39 +396,65 @@ def classificar_processo_task(pessoa_id: int, numero_processo: str) -> None:
 
 
 @dramatiq.actor(queue_name="indexacao", max_retries=3, min_backoff=5_000)
-def indexar_publicacao_task(pub_id: int, pub_data: dict) -> None:
-    """Vetoriza uma publicação individual e indexa no Qdrant."""
+def indexar_publicacao_task(tenant_id: str, pub_id: int, pub_data: dict) -> None:
+    """Vetoriza uma publicação individual e indexa no Qdrant do tenant."""
     from services.embedding_service import index_publicacao, ensure_collections
+    if tenant_id:
+        set_current_tenant(tenant_id)
     try:
-        ensure_collections()
-        index_publicacao(pub_id, pub_data)
+        ensure_collections(tenant_id=tenant_id or None)
+        index_publicacao(pub_id, pub_data, tenant_id=tenant_id or None)
     except Exception as e:
         logger.error(f"indexar_publicacao_task: erro ao indexar pub {pub_id}: {e}")
         raise
 
 
 @dramatiq.actor(queue_name="indexacao", max_retries=3, min_backoff=5_000)
-def indexar_processo_task(processo_id: str, processo_data: dict) -> None:
-    """Vetoriza histórico concatenado de um processo e indexa no Qdrant."""
+def indexar_processo_task(tenant_id: str, processo_id: str, processo_data: dict) -> None:
+    """Vetoriza histórico concatenado de um processo e indexa no Qdrant do tenant."""
     from services.embedding_service import index_processo, ensure_collections
+    if tenant_id:
+        set_current_tenant(tenant_id)
     try:
-        ensure_collections()
-        index_processo(processo_id, processo_data)
+        ensure_collections(tenant_id=tenant_id or None)
+        index_processo(processo_id, processo_data, tenant_id=tenant_id or None)
     except Exception as e:
         logger.error(f"indexar_processo_task: erro ao indexar processo {processo_id}: {e}")
         raise
 
 
 @dramatiq.actor(queue_name="indexacao", max_retries=1)
-def reindexar_tudo_task() -> None:
-    """Backfill: reindexar todas as publicações existentes no Qdrant.
+def reindexar_tudo_task(tenant_id: str | None = None) -> None:
+    """Backfill: reindexar todas as publicações de um tenant no Qdrant.
+
+    Se tenant_id=None, tenta usar o contexto atual.
     Processa em batches para não sobrecarregar memória.
-    Usa batch encode + batch upsert para máxima eficiência.
     """
     from services.embedding_service import ensure_collections, index_publicacoes_batch, index_processos_batch
+    from sqlalchemy import select
+    from storage.models import Tenant
 
-    ensure_collections()
+    if tenant_id:
+        set_current_tenant(tenant_id)
+
+    # Resolver tenant_id se não fornecido
+    from db.tenant_context import get_current_tenant_or_none
+    tid = tenant_id or get_current_tenant_or_none()
+
     repo = DiarioRepository(config.database_url)
+
+    # Se nenhum tenant, reindexar todos os tenants
+    if not tid:
+        with repo.get_session(tenant_id=None) as session:
+            tenants = list(session.execute(
+                select(Tenant).where(Tenant.is_active == True)
+            ).scalars().all())
+        for t in tenants:
+            reindexar_tudo_task.send(str(t.id))
+        logger.info(f"reindexar_tudo_task: {len(tenants)} tenant(s) enfileirado(s) para reindex")
+        return
+
+    ensure_collections(tenant_id=tid)
 
     # 1. Indexar publicações em batch
     offset = 0
@@ -413,16 +467,16 @@ def reindexar_tudo_task() -> None:
             break
         try:
             items = [(pub.id, pub.to_dict()) for pub in pubs]
-            indexados = index_publicacoes_batch(items)
+            indexados = index_publicacoes_batch(items, tenant_id=tid)
             total += indexados
         except Exception as e:
             logger.error(f"reindexar_tudo_task: erro ao indexar batch offset={offset}: {e}")
         offset += batch_size
-        logger.info(f"Reindex publicações: {total} indexadas...")
+        logger.info(f"Reindex publicações tenant={tid}: {total} indexadas...")
 
-    logger.info(f"Reindex publicações completo: {total} indexadas.")
+    logger.info(f"Reindex publicações tenant={tid} completo: {total} indexadas.")
 
-    # 2. Indexar processos em batch paginado (evita carregar tudo em memória)
+    # 2. Indexar processos em batch paginado
     proc_offset = 0
     proc_batch_size = 50
     total_proc = 0
@@ -437,11 +491,45 @@ def reindexar_tudo_task() -> None:
             if proc_data:
                 processos.append(proc_data)
         try:
-            indexados = index_processos_batch(processos)
+            indexados = index_processos_batch(processos, tenant_id=tid)
             total_proc += indexados
         except Exception as e:
             logger.error(f"reindexar_tudo_task: erro ao indexar batch de processos offset={proc_offset}: {e}")
         proc_offset += proc_batch_size
-        logger.info(f"Reindex processos: {total_proc} indexados...")
+        logger.info(f"Reindex processos tenant={tid}: {total_proc} indexados...")
 
-    logger.info(f"Reindex processos completo: {total_proc} indexados.")
+    logger.info(f"Reindex processos tenant={tid} completo: {total_proc} indexados.")
+
+
+# ---------------------------------------------------------------------------
+# Cleanup de Autenticação (manutenção diária)
+# ---------------------------------------------------------------------------
+
+@dramatiq.actor(queue_name="manutencao")
+def cleanup_expired_auth_tokens():
+    """Remove refresh tokens expirados do banco. Roda diariamente."""
+    try:
+        from sqlalchemy import text
+        with repo.get_session() as session:
+            result = session.execute(
+                text("DELETE FROM refresh_tokens WHERE expires_at < now()")
+            )
+            session.commit()
+            logger.info(f"cleanup_expired_auth_tokens: removidos {result.rowcount} refresh tokens expirados")
+    except Exception as e:
+        logger.error(f"cleanup_expired_auth_tokens: erro: {e}")
+
+
+@dramatiq.actor(queue_name="manutencao")
+def cleanup_old_audit_logs():
+    """Remove audit logs com mais de 90 dias. Roda diariamente."""
+    try:
+        from sqlalchemy import text
+        with repo.get_session() as session:
+            result = session.execute(
+                text("DELETE FROM auth_audit_log WHERE created_at < now() - interval '90 days'")
+            )
+            session.commit()
+            logger.info(f"cleanup_old_audit_logs: removidos {result.rowcount} registros de audit log")
+    except Exception as e:
+        logger.error(f"cleanup_old_audit_logs: erro: {e}")

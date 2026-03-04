@@ -10,12 +10,43 @@ import logging
 from datetime import date, datetime, timedelta
 from typing import Optional
 
-from sqlalchemy import create_engine, func
+from sqlalchemy import create_engine, func, text
 from sqlalchemy.orm import Session, sessionmaker, joinedload
 
 from .models import Base, CPFMonitorado, DiarioProcessado, Ocorrencia, PessoaMonitorada, PublicacaoMonitorada, Alerta, PadraoOportunidade, ClassificacaoProcesso, OportunidadeDescartada
 
 logger = logging.getLogger(__name__)
+
+
+class _TenantSession:
+    """
+    Context manager que seta o tenant no PostgreSQL via SET LOCAL antes de usar a sessão.
+    Isso ativa as políticas de Row-Level Security.
+    """
+
+    def __init__(self, session_factory, tenant_id: str | None = None):
+        self._factory = session_factory
+        self._tenant_id = tenant_id
+        self._session: Session | None = None
+
+    def __enter__(self) -> Session:
+        self._session = self._factory()
+        if self._tenant_id:
+            try:
+                self._session.execute(
+                    text("SET LOCAL app.current_tenant = :tid"),
+                    {"tid": self._tenant_id},
+                )
+            except Exception as e:
+                logger.warning(f"Não foi possível setar tenant na sessão: {e}")
+        return self._session
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        if self._session:
+            if exc_type:
+                self._session.rollback()
+            self._session.close()
+        return False
 
 
 class DiarioRepository:
@@ -33,9 +64,21 @@ class DiarioRepository:
         Base.metadata.create_all(self.engine)
         self.SessionLocal = sessionmaker(bind=self.engine)
 
-    def get_session(self) -> Session:
-        """Cria uma nova sessão de banco de dados."""
-        return self.SessionLocal()
+    def get_session(self, tenant_id: str | None = None) -> _TenantSession:
+        """
+        Cria uma sessão de banco de dados.
+
+        Se tenant_id for fornecido (ou estiver no contexto via ContextVar),
+        seta app.current_tenant para ativar RLS.
+        """
+        # Tentar obter tenant do ContextVar se não fornecido
+        if tenant_id is None:
+            try:
+                from db.tenant_context import get_current_tenant_or_none
+                tenant_id = get_current_tenant_or_none()
+            except Exception:
+                pass
+        return _TenantSession(self.SessionLocal, tenant_id)
 
     # === CPFs Monitorados ===
 

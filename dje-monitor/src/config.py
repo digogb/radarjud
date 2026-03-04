@@ -108,9 +108,28 @@ class Config:
     openai_api_key: str = os.getenv("DJE_OPENAI_API_KEY", "")
     openai_model: str = os.getenv("DJE_OPENAI_MODEL", "gpt-4o-mini")
 
+    # Multi-Tenancy
+    admin_key: str = os.getenv("DJE_ADMIN_KEY", "")
+    environment: str = os.getenv("DJE_ENVIRONMENT", "production")
+
+    # Autenticação JWT
+    jwt_secret_key: str = os.getenv("DJE_AUTH_JWT_SECRET", "")
+    jwt_algorithm: str = os.getenv("DJE_AUTH_JWT_ALGORITHM", "HS256")
+    access_token_expire_minutes: int = int(os.getenv("DJE_AUTH_ACCESS_EXPIRE_MINUTES", "30"))
+    refresh_token_expire_days: int = int(os.getenv("DJE_AUTH_REFRESH_EXPIRE_DAYS", "30"))
+    max_login_attempts: int = int(os.getenv("DJE_AUTH_MAX_LOGIN_ATTEMPTS", "5"))
+    lockout_minutes: int = int(os.getenv("DJE_AUTH_LOCKOUT_MINUTES", "15"))
+    password_min_length: int = int(os.getenv("DJE_AUTH_PASSWORD_MIN_LENGTH", "8"))
+    login_rate_limit_attempts: int = int(os.getenv("DJE_AUTH_RATE_LIMIT_ATTEMPTS", "20"))
+    login_rate_limit_window_seconds: int = int(os.getenv("DJE_AUTH_RATE_LIMIT_WINDOW_SECONDS", "900"))
+
     # Classificação automática de credor/devedor
     classif_max_pubs: int = int(os.getenv("DJE_CLASSIF_MAX_PUBS", "3"))
     classif_max_chars: int = int(os.getenv("DJE_CLASSIF_MAX_CHARS", "500"))
+
+    @property
+    def auth_habilitado(self) -> bool:
+        return bool(self.jwt_secret_key)
 
     @property
     def telegram_habilitado(self) -> bool:

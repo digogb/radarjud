@@ -1,4 +1,4 @@
-from fastapi import FastAPI, Query, HTTPException, BackgroundTasks, UploadFile, File
+from fastapi import FastAPI, Query, HTTPException, BackgroundTasks, UploadFile, File, Request
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import List, Optional, Any
@@ -13,6 +13,10 @@ sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 from collectors.djen_collector import DJENCollector
 from storage.repository import DiarioRepository
 from config import Config
+from middleware.tenant import TenantMiddleware
+from auth.token_service import TokenService
+from auth.auth_service import AuthService
+from auth.dependencies import set_token_service
 
 # Configuração de Logs básica
 logging.basicConfig(
@@ -23,10 +27,18 @@ logger = logging.getLogger("api")
 
 app = FastAPI(title="DJE Monitor API", version="2.0.0")
 
-# CORS (Permitir frontend react local)
+# Security Headers
+from middleware.security_headers import SecurityHeadersMiddleware
+app.add_middleware(SecurityHeadersMiddleware)
+
+# CORS
+_cors_origins = ["http://localhost:5173", "http://localhost:3000", "http://localhost:80"]
+_extra_origins = os.getenv("DJE_CORS_ORIGINS", "").split(",")
+_cors_origins += [o.strip() for o in _extra_origins if o.strip()]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Em produção deve ser restritivo
+    allow_origins=_cors_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -36,6 +48,55 @@ app.add_middleware(
 config = Config()
 repo = DiarioRepository(config.database_url)
 collector = DJENCollector(tribunal=config.tribunal)
+
+# Auth (JWT + serviços)
+_token_service = None
+_auth_service = None
+_rate_limiter = None
+if config.auth_habilitado:
+    _token_service = TokenService(
+        secret_key=config.jwt_secret_key,
+        algorithm=config.jwt_algorithm,
+        access_expire_minutes=config.access_token_expire_minutes,
+        refresh_expire_days=config.refresh_token_expire_days,
+    )
+    set_token_service(_token_service)
+    _auth_service = AuthService(
+        session_factory=repo.get_session,
+        token_service=_token_service,
+        max_login_attempts=config.max_login_attempts,
+        lockout_minutes=config.lockout_minutes,
+    )
+
+    from middleware.rate_limit import LoginRateLimiter
+    _rate_limiter = LoginRateLimiter(
+        redis_url=config.redis_url,
+        max_attempts=config.login_rate_limit_attempts,
+        window_seconds=config.login_rate_limit_window_seconds,
+    )
+
+# Tenant Middleware — identifica tenant via X-Tenant-ID ou Bearer JWT
+app.add_middleware(TenantMiddleware, get_session_fn=repo.get_session, token_service=_token_service)
+
+# Router Admin (gerenciamento de tenants — não usa middleware de tenant)
+from routers import admin as admin_router_module
+admin_router_module._get_session_fn = repo.get_session
+app.include_router(admin_router_module.router)
+
+# Router Auth
+from routers import auth as auth_router_module
+if _auth_service:
+    auth_router_module.set_auth_service(_auth_service)
+if _rate_limiter:
+    auth_router_module.set_rate_limiter(_rate_limiter)
+app.include_router(auth_router_module.router, prefix="/auth")
+
+# Router Users
+from routers import users as users_router_module
+from services.user_service import UserService
+_user_service = UserService(session_factory=repo.get_session)
+users_router_module.set_user_service(_user_service)
+app.include_router(users_router_module.router, prefix="/users")
 
 # Broker Dramatiq (apenas enfileira — processamento é feito pelo worker)
 from tasks import (
@@ -64,6 +125,24 @@ def _init_scheduler():
             max_instances=1,
             replace_existing=True,
         )
+        # Cleanup diário de tokens expirados e audit logs
+        try:
+            from tasks import cleanup_expired_auth_tokens, cleanup_old_audit_logs
+            _scheduler.add_job(
+                cleanup_expired_auth_tokens.send,
+                "cron", hour=3, minute=0,
+                id="cleanup_auth_tokens",
+                max_instances=1, replace_existing=True,
+            )
+            _scheduler.add_job(
+                cleanup_old_audit_logs.send,
+                "cron", hour=3, minute=30,
+                id="cleanup_audit_logs",
+                max_instances=1, replace_existing=True,
+            )
+        except Exception as e_cleanup:
+            logger.warning(f"Não foi possível agendar cleanup de auth: {e_cleanup}")
+
         _scheduler.start()
         logger.info(
             f"Scheduler iniciado — enfileirando verificações a cada {config.monitor_interval_minutes} min"
@@ -183,11 +262,12 @@ class PessoaMonitoradaUpdate(BaseModel):
 
 
 @app.post("/api/v1/pessoas-monitoradas", status_code=201)
-def criar_pessoa(body: PessoaMonitoradaCreate):
+def criar_pessoa(request: Request, body: PessoaMonitoradaCreate):
     """
     Cria uma pessoa para monitoramento.
     Enfileira first_check no worker Dramatiq (salva publicações existentes sem gerar alertas).
     """
+    _tid = getattr(request.state, "tenant_id", "")
     pessoa = repo.adicionar_pessoa(
         nome=body.nome,
         cpf=body.cpf,
@@ -195,7 +275,7 @@ def criar_pessoa(body: PessoaMonitoradaCreate):
         intervalo_horas=body.intervalo_horas,
     )
     # First check assíncrono: enfileira no worker
-    first_check_task.send(pessoa.id, pessoa.nome, pessoa.tribunal_filtro)
+    first_check_task.send(_tid, pessoa.id, pessoa.nome, pessoa.tribunal_filtro)
     return repo.obter_pessoa(pessoa.id)
 
 
@@ -429,6 +509,7 @@ async def importar_planilha_endpoint(
 
 @app.get("/api/v1/search/semantic")
 def semantic_search(
+    request: Request,
     q: str = Query(..., min_length=3, description="Texto da busca semântica"),
     tribunal: Optional[str] = Query(None, description="Filtro por tribunal (ex: TJCE)"),
     pessoa_id: Optional[int] = Query(None, description="Filtro por pessoa monitorada"),
@@ -450,6 +531,7 @@ def semantic_search(
     from services.embedding_service import search_publicacoes, search_processos
     from storage.models import PublicacaoMonitorada
     _t_start = _time.perf_counter()
+    _tenant_id = getattr(request.state, "tenant_id", None)
     try:
         # Coletar processos de referência para excluir dos resultados
         processos_referencia: set[str] = set()
@@ -472,6 +554,7 @@ def semantic_search(
             results = search_processos(
                 query=q, tribunal=tribunal,
                 limit=limit, score_threshold=score_threshold,
+                tenant_id=_tenant_id,
             )
             # Enriquecer processos com publicações completas do PostgreSQL
             numeros = [r.get("numero_processo") for r in results if r.get("numero_processo")]
@@ -508,6 +591,7 @@ def semantic_search(
             results = search_publicacoes(
                 query=q, tribunal=tribunal, pessoa_id=pessoa_id,
                 limit=limit, score_threshold=score_threshold,
+                tenant_id=_tenant_id,
             )
             # Enriquecer com dados completos do PostgreSQL
             pub_ids = [r["pub_id"] for r in results]
@@ -563,6 +647,7 @@ def semantic_search(
 
 @app.get("/api/v1/oportunidades")
 def buscar_oportunidades(
+    request: Request,
     dias: int = Query(30, ge=1, le=365, description="Janela de dias para varrer publicações"),
     limit: int = Query(50, ge=1, le=200, description="Máximo de resultados"),
     semantico: bool = Query(True, description="Aplicar filtro semântico para reduzir falsos positivos"),
@@ -574,11 +659,12 @@ def buscar_oportunidades(
 
     Cada item é enriquecido com classificação IA (ia_papel, ia_veredicto, ia_valor) quando disponível.
     """
+    _tenant_id = getattr(request.state, "tenant_id", None)
     items = repo.buscar_oportunidades(dias=dias, limit=limit)
     if semantico and items:
         from services.embedding_service import rerank_oportunidades
         pub_ids = [item["id"] for item in items]
-        scores = rerank_oportunidades(pub_ids, threshold=0.45)
+        scores = rerank_oportunidades(pub_ids, threshold=0.45, tenant_id=_tenant_id)
         items = [item for item in items if item["id"] in scores]
         for item in items:
             item["score_semantico"] = scores[item["id"]]
@@ -682,10 +768,11 @@ def restaurar_oportunidade(body: DescartarOportunidadeRequest):
 
 
 @app.post("/api/v1/oportunidades/varrer")
-def varrer_oportunidades():
+def varrer_oportunidades(request: Request):
     """Dispara varredura imediata de oportunidades de crédito."""
     from tasks import varrer_oportunidades_task
-    varrer_oportunidades_task.send()
+    _tid = getattr(request.state, "tenant_id", None)
+    varrer_oportunidades_task.send(_tid)
     return {"status": "varredura enfileirada"}
 
 
@@ -695,12 +782,13 @@ class ClassificarProcessoRequest(BaseModel):
 
 
 @app.post("/api/v1/oportunidades/classificar")
-def classificar_processo_endpoint(body: ClassificarProcessoRequest):
+def classificar_processo_endpoint(request: Request, body: ClassificarProcessoRequest):
     """Dispara classificação IA de credor/devedor para um processo específico."""
     if not config.openai_habilitado:
         raise HTTPException(status_code=503, detail="OpenAI não configurada.")
     from tasks import classificar_processo_task
-    classificar_processo_task.send(body.pessoa_id, body.numero_processo)
+    _tid = getattr(request.state, "tenant_id", "")
+    classificar_processo_task.send(_tid, body.pessoa_id, body.numero_processo)
     return {"status": "classificação enfileirada"}
 
 
@@ -779,10 +867,11 @@ def resumir_processo(body: ResumoProcessoRequest):
 
 
 @app.post("/api/v1/search/reindex")
-def trigger_reindex():
+def trigger_reindex(request: Request):
     """Dispara reindexação completa das publicações no Qdrant."""
     from tasks import reindexar_tudo_task
-    reindexar_tudo_task.send()
+    _tid = getattr(request.state, "tenant_id", None)
+    reindexar_tudo_task.send(_tid)
     return {"status": "reindex enfileirado"}
 
 

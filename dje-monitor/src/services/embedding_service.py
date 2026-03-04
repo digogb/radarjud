@@ -24,8 +24,36 @@ _model = None
 _client = None
 _collections_ready = False
 
+# Legacy globals (mantidos por compatibilidade e uso durante migração)
 COLLECTION_PUBLICACOES = "publicacoes"
 COLLECTION_PROCESSOS = "processos"
+
+
+def _resolve_tenant_id(tenant_id: "str | None") -> "str | None":
+    """Tenta obter tenant_id do contexto se não fornecido explicitamente."""
+    if tenant_id:
+        return tenant_id
+    try:
+        from db.tenant_context import get_current_tenant_or_none
+        return get_current_tenant_or_none()
+    except Exception:
+        return None
+
+
+def _get_collection_publicacoes(tenant_id: "str | None" = None) -> str:
+    tid = _resolve_tenant_id(tenant_id)
+    if tid:
+        from services.qdrant_tenant import collection_publicacoes
+        return collection_publicacoes(tid)
+    return COLLECTION_PUBLICACOES
+
+
+def _get_collection_processos(tenant_id: "str | None" = None) -> str:
+    tid = _resolve_tenant_id(tenant_id)
+    if tid:
+        from services.qdrant_tenant import collection_processos
+        return collection_processos(tid)
+    return COLLECTION_PROCESSOS
 
 
 def _get_config():
@@ -57,9 +85,22 @@ def get_client():
     return _client
 
 
-def ensure_collections():
-    """Cria collections e índices no Qdrant se não existirem. Usa cache para evitar chamadas repetidas."""
+def ensure_collections(tenant_id: "str | None" = None):
+    """
+    Cria collections e índices no Qdrant se não existirem.
+
+    Se tenant_id fornecido (ou disponível no contexto), cria as collections
+    específicas do tenant. Caso contrário, cria as collections globais legacy.
+    """
     global _collections_ready
+
+    tid = _resolve_tenant_id(tenant_id)
+    if tid:
+        from services.qdrant_tenant import ensure_tenant_collections
+        ensure_tenant_collections(tid)
+        return
+
+    # Legacy: collections globais (sem tenant)
     if _collections_ready:
         return
 
@@ -83,7 +124,7 @@ def ensure_collections():
             client.create_payload_index(collection, "pessoa_id", PayloadSchemaType.INTEGER)
             client.create_payload_index(collection, "numero_processo", PayloadSchemaType.KEYWORD)
             client.create_payload_index(collection, "data_disponibilizacao", PayloadSchemaType.KEYWORD)
-            logger.info(f"Collection '{collection}' criada com índices.")
+            logger.info(f"Collection legacy '{collection}' criada com índices.")
 
     _collections_ready = True
 
@@ -148,8 +189,8 @@ def encode(text: str, prefix: str = "search_document") -> list:
     return vector[: cfg.embedding_dims]
 
 
-def index_publicacao(pub_id: int, pub: dict):
-    """Vetoriza e indexa uma publicação no Qdrant."""
+def index_publicacao(pub_id: int, pub: dict, tenant_id: "str | None" = None):
+    """Vetoriza e indexa uma publicação no Qdrant na collection do tenant."""
     from qdrant_client.models import PointStruct
 
     text = build_publicacao_text(pub)
@@ -159,9 +200,10 @@ def index_publicacao(pub_id: int, pub: dict):
 
     vector = encode(text, prefix="search_document")
     client = get_client()
+    collection = _get_collection_publicacoes(tenant_id)
 
     client.upsert(
-        collection_name=COLLECTION_PUBLICACOES,
+        collection_name=collection,
         points=[
             PointStruct(
                 id=pub_id,
@@ -201,8 +243,8 @@ def _extract_polo(pub: dict, polo: str) -> str:
     return ""
 
 
-def index_processo(processo_id: str, processo: dict):
-    """Vetoriza histórico concatenado de um processo."""
+def index_processo(processo_id: str, processo: dict, tenant_id: "str | None" = None):
+    """Vetoriza histórico concatenado de um processo na collection do tenant."""
     from qdrant_client.models import PointStruct
 
     text = build_processo_text(processo)
@@ -211,12 +253,13 @@ def index_processo(processo_id: str, processo: dict):
 
     vector = encode(text, prefix="search_document")
     client = get_client()
+    collection = _get_collection_processos(tenant_id)
 
     # Usa hash do numero_processo como ID numérico
     point_id = abs(hash(processo_id)) % (2**63)
 
     client.upsert(
-        collection_name=COLLECTION_PROCESSOS,
+        collection_name=collection,
         points=[
             PointStruct(
                 id=point_id,
@@ -233,12 +276,13 @@ def index_processo(processo_id: str, processo: dict):
     logger.debug(f"Processo {processo_id} indexado no Qdrant.")
 
 
-def index_publicacoes_batch(items: list, batch_size: int = 32) -> int:
+def index_publicacoes_batch(items: list, batch_size: int = 32, tenant_id: "str | None" = None) -> int:
     """Vetoriza e indexa um batch de publicações no Qdrant.
 
     Args:
         items: lista de tuplas (pub_id: int, pub: dict)
         batch_size: tamanho do batch para o modelo de embedding
+        tenant_id: ID do tenant (ou None para usar o contexto)
 
     Returns:
         Número de publicações indexadas.
@@ -248,6 +292,7 @@ def index_publicacoes_batch(items: list, batch_size: int = 32) -> int:
     cfg = _get_config()
     model = get_model()
     client = get_client()
+    collection = _get_collection_publicacoes(tenant_id)
 
     # Filtrar itens com texto válido
     valid = [
@@ -281,12 +326,12 @@ def index_publicacoes_batch(items: list, batch_size: int = 32) -> int:
         for i, (pub_id, pub, text) in enumerate(valid)
     ]
 
-    client.upsert(collection_name=COLLECTION_PUBLICACOES, points=points)
-    logger.debug(f"Batch de {len(points)} publicações indexado no Qdrant.")
+    client.upsert(collection_name=collection, points=points)
+    logger.debug(f"Batch de {len(points)} publicações indexado no Qdrant ({collection}).")
     return len(points)
 
 
-def index_processos_batch(processos: list, batch_size: int = 32) -> int:
+def index_processos_batch(processos: list, batch_size: int = 32, tenant_id: "str | None" = None) -> int:
     """Vetoriza e indexa um batch de processos no Qdrant.
 
     Args:
@@ -301,6 +346,7 @@ def index_processos_batch(processos: list, batch_size: int = 32) -> int:
     cfg = _get_config()
     model = get_model()
     client = get_client()
+    collection = _get_collection_processos(tenant_id)
 
     valid = [
         (proc, build_processo_text(proc))
@@ -328,8 +374,8 @@ def index_processos_batch(processos: list, batch_size: int = 32) -> int:
         for i, (proc, text) in enumerate(valid)
     ]
 
-    client.upsert(collection_name=COLLECTION_PROCESSOS, points=points)
-    logger.debug(f"Batch de {len(points)} processos indexado no Qdrant.")
+    client.upsert(collection_name=collection, points=points)
+    logger.debug(f"Batch de {len(points)} processos indexado no Qdrant ({collection}).")
     return len(points)
 
 
@@ -366,7 +412,7 @@ QUERY_OPORTUNIDADE_CREDITO = (
 )
 
 
-def rerank_oportunidades(pub_ids: list, threshold: float = 0.45) -> dict:
+def rerank_oportunidades(pub_ids: list, threshold: float = 0.45, tenant_id: "str | None" = None) -> dict:
     """Pontua semanticamente candidatos a oportunidade de crédito pré-filtrados por keyword.
 
     Usa Qdrant para buscar similaridade entre os pub_ids e a query canônica de oportunidade.
@@ -387,8 +433,9 @@ def rerank_oportunidades(pub_ids: list, threshold: float = 0.45) -> dict:
         vector = encode(QUERY_OPORTUNIDADE_CREDITO, prefix="search_query")
         client = get_client()
 
+        collection = _get_collection_publicacoes(tenant_id)
         results = client.query_points(
-            collection_name=COLLECTION_PUBLICACOES,
+            collection_name=collection,
             query=vector,
             query_filter=Filter(must=[HasIdCondition(has_id=list(pub_ids))]),
             limit=len(pub_ids),
@@ -414,6 +461,7 @@ def search_publicacoes(
     pessoa_id: Optional[int] = None,
     limit: Optional[int] = None,
     score_threshold: Optional[float] = None,
+    tenant_id: "str | None" = None,
 ) -> list:
     """Busca semântica em publicações com filtros opcionais."""
     import time
@@ -428,6 +476,7 @@ def search_publicacoes(
     t_encode = time.perf_counter() - t0
 
     client = get_client()
+    collection = _get_collection_publicacoes(tenant_id)
 
     must_conditions = []
     if tribunal:
@@ -443,7 +492,7 @@ def search_publicacoes(
 
     t1 = time.perf_counter()
     results = client.query_points(
-        collection_name=COLLECTION_PUBLICACOES,
+        collection_name=collection,
         query=vector,
         query_filter=query_filter,
         limit=limit,
@@ -474,6 +523,7 @@ def search_processos(
     tribunal: Optional[str] = None,
     limit: Optional[int] = None,
     score_threshold: Optional[float] = None,
+    tenant_id: "str | None" = None,
 ) -> list:
     """Busca semântica em processos (histórico concatenado)."""
     import time
@@ -488,6 +538,7 @@ def search_processos(
     t_encode = time.perf_counter() - t0
 
     client = get_client()
+    collection = _get_collection_processos(tenant_id)
 
     query_filter = None
     if tribunal:
@@ -497,7 +548,7 @@ def search_processos(
 
     t1 = time.perf_counter()
     results = client.query_points(
-        collection_name=COLLECTION_PROCESSOS,
+        collection_name=collection,
         query=vector,
         query_filter=query_filter,
         limit=limit,

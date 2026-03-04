@@ -1,4 +1,5 @@
 import axios from 'axios';
+import { getAccessToken } from './auth_token_store';
 
 // Se VITE_API_URL estiver definido (mesmo vazio), usa ele. Caso contrário usa localhost:8000 (dev)
 // Em produção (Docker), VITE_API_URL deve ser vazio para usar caminho relativo /api
@@ -12,6 +13,115 @@ const api = axios.create({
         'Content-Type': 'application/json',
     },
 });
+
+// Request: injeta Bearer token
+api.interceptors.request.use((config) => {
+    const token = getAccessToken();
+    if (token) {
+        config.headers['Authorization'] = `Bearer ${token}`;
+    }
+    return config;
+});
+
+// Response: auto-refresh em 401
+let _isRefreshing = false;
+let _refreshQueue: Array<{ resolve: (t: string) => void; reject: (e: unknown) => void }> = [];
+
+api.interceptors.response.use(
+    (response) => response,
+    async (error) => {
+        const original = error.config;
+        if (error.response?.status === 401 && !original._retry) {
+            original._retry = true;
+
+            if (_isRefreshing) {
+                return new Promise<string>((resolve, reject) => {
+                    _refreshQueue.push({ resolve, reject });
+                }).then((newToken) => {
+                    original.headers['Authorization'] = `Bearer ${newToken}`;
+                    return api(original);
+                });
+            }
+
+            _isRefreshing = true;
+            try {
+                const refreshToken = sessionStorage.getItem('dje_refresh_token');
+                if (!refreshToken) throw new Error('no refresh token');
+
+                const { data } = await axios.post(`${API_URL}/auth/refresh`, {
+                    refresh_token: refreshToken,
+                });
+
+                const newAccess: string = data.access_token;
+                sessionStorage.setItem('dje_refresh_token', data.refresh_token);
+
+                const { setAccessToken } = await import('./auth_token_store');
+                setAccessToken(newAccess);
+
+                _refreshQueue.forEach(({ resolve }) => resolve(newAccess));
+                _refreshQueue = [];
+
+                original.headers['Authorization'] = `Bearer ${newAccess}`;
+                return api(original);
+            } catch (refreshError) {
+                _refreshQueue.forEach(({ reject }) => reject(refreshError));
+                _refreshQueue = [];
+                sessionStorage.removeItem('dje_refresh_token');
+                const { clearAccessToken } = await import('./auth_token_store');
+                clearAccessToken();
+                window.location.href = '/login';
+                return Promise.reject(refreshError);
+            } finally {
+                _isRefreshing = false;
+            }
+        }
+        return Promise.reject(error);
+    }
+);
+
+// ===== API de Autenticação (chamadas diretas — sem interceptors para evitar loops) =====
+export const authApi = {
+    login: async (email: string, password: string): Promise<{
+        access_token: string;
+        refresh_token: string;
+        expires_in: number;
+        user: {
+            id: string; name: string; email: string; role: string;
+            tenant_id: string; tenant_name: string; must_change_password: boolean;
+        };
+    }> => {
+        const res = await axios.post(`${API_URL}/auth/login`, { email, password });
+        return res.data;
+    },
+
+    refresh: async (refresh_token: string): Promise<{
+        access_token: string;
+        refresh_token: string;
+    }> => {
+        const res = await axios.post(`${API_URL}/auth/refresh`, { refresh_token });
+        return res.data;
+    },
+
+    logout: async (refresh_token: string): Promise<void> => {
+        await axios.post(`${API_URL}/auth/logout`, { refresh_token });
+    },
+
+    me: async (access_token: string): Promise<{
+        id: string; name: string; email: string; role: string;
+        tenant_id: string; tenant_name: string; must_change_password: boolean;
+    }> => {
+        const res = await axios.get(`${API_URL}/auth/me`, {
+            headers: { Authorization: `Bearer ${access_token}` },
+        });
+        return { tenant_name: '', ...res.data };
+    },
+
+    changePassword: async (current_password: string, new_password: string): Promise<void> => {
+        await axios.patch(`${API_URL}/auth/me/password`, { current_password, new_password }, {
+            headers: { Authorization: `Bearer ${getAccessToken()}` },
+        });
+    },
+};
 
 // Types - Novo formato organizado por instâncias
 export interface MovimentacaoFormatada {

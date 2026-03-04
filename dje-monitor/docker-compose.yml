@@ -104,6 +104,8 @@ services:
       context: ./web
       args:
         - VITE_API_URL=
+        # Configurar VITE_TENANT_ID para o tenant padrão (ex: UUID do tenant 'armando')
+        - VITE_TENANT_ID=21269ac1-1a04-4c6a-b8e9-39852d403212
     container_name: dje-monitor-web
     ports:
       - "80:80"
@@ -112,6 +114,28 @@ services:
     restart: unless-stopped
     depends_on:
       - api
+
+  # Scheduler: dispara sync diária para todos os tenants ativos
+  scheduler:
+    build: .
+    image: dje-monitor-backend:latest
+    container_name: dje-monitor-scheduler
+    entrypoint: []
+    command: sh -c "while true; do python3 -c 'import sys; sys.path.insert(0, \"/app/src\"); from tasks import agendar_verificacoes_task; agendar_verificacoes_task.send(); print(\"Sync diaria enfileirada\")'; sleep 86400; done"
+    volumes:
+      - ./src:/app/src
+    env_file:
+      - .env
+    environment:
+      - DJE_DATABASE_URL=postgresql://dje:dje_secret@postgres:5432/dje_monitor
+      - DJE_REDIS_URL=redis://redis:6379/0
+      - DJE_QDRANT_URL=http://qdrant:6333
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
 
 volumes:
   postgres_data:

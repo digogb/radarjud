@@ -7,6 +7,7 @@ Define as tabelas para:
 - Ocorrências encontradas
 """
 
+import uuid
 from datetime import datetime
 
 from sqlalchemy import (
@@ -16,6 +17,7 @@ from sqlalchemy import (
     DateTime,
     ForeignKey,
     Integer,
+    JSON,
     String,
     Text,
     UniqueConstraint,
@@ -23,8 +25,29 @@ from sqlalchemy import (
 from sqlalchemy.orm import DeclarativeBase, relationship
 
 
+# Roles válidos para usuários
+USER_ROLES = ("owner", "admin", "advogado", "estagiario", "leitura")
+
+
 class Base(DeclarativeBase):
     pass
+
+
+class Tenant(Base):
+    """Tenant (escritório de advocacia) com acesso ao DJE Monitor."""
+
+    __tablename__ = "tenants"
+
+    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    name = Column(String(255), nullable=False)
+    slug = Column(String(100), unique=True, nullable=False, index=True)
+    is_active = Column(Boolean, default=True, index=True)
+    settings = Column(JSON, default=dict)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    def __repr__(self):
+        return f"<Tenant(slug='{self.slug}', name='{self.name}')>"
 
 
 class CPFMonitorado(Base):
@@ -33,7 +56,8 @@ class CPFMonitorado(Base):
     __tablename__ = "cpfs_monitorados"
 
     id = Column(Integer, primary_key=True)
-    cpf = Column(String(11), unique=True, nullable=False, index=True)
+    tenant_id = Column(String(36), ForeignKey("tenants.id"), nullable=True, index=True)
+    cpf = Column(String(11), nullable=False, index=True)
     nome = Column(String(200))
     ativo = Column(Boolean, default=True)
     criado_em = Column(DateTime, default=datetime.utcnow)
@@ -51,6 +75,7 @@ class DiarioProcessado(Base):
     __tablename__ = "diarios_processados"
 
     id = Column(Integer, primary_key=True)
+    tenant_id = Column(String(36), ForeignKey("tenants.id"), nullable=True, index=True)
     tribunal = Column(String(10), nullable=False, index=True)
     fonte = Column(String(20), nullable=False)  # DJEN, e-SAJ
     data_publicacao = Column(Date, nullable=False, index=True)
@@ -88,6 +113,7 @@ class Ocorrencia(Base):
     __tablename__ = "ocorrencias"
 
     id = Column(Integer, primary_key=True)
+    tenant_id = Column(String(36), ForeignKey("tenants.id"), nullable=True, index=True)
     cpf_monitorado_id = Column(
         Integer, ForeignKey("cpfs_monitorados.id"), nullable=False
     )
@@ -120,6 +146,7 @@ class PessoaMonitorada(Base):
     __tablename__ = "pessoas_monitoradas"
 
     id = Column(Integer, primary_key=True)
+    tenant_id = Column(String(36), ForeignKey("tenants.id"), nullable=True, index=True)
     nome = Column(String(300), nullable=False, index=True)
     cpf = Column(String(14), nullable=True, index=True)  # 11 dígitos CPF ou 14 CNPJ
     tribunal_filtro = Column(String(10), nullable=True)  # None = todos os tribunais
@@ -151,6 +178,7 @@ class PublicacaoMonitorada(Base):
     __tablename__ = "publicacoes_monitoradas"
 
     id = Column(Integer, primary_key=True)
+    tenant_id = Column(String(36), ForeignKey("tenants.id"), nullable=True, index=True)
     pessoa_id = Column(Integer, ForeignKey("pessoas_monitoradas.id"), nullable=False, index=True)
     hash_unico = Column(String(64), unique=True, nullable=False, index=True)
     comunicacao_id = Column(String(100), nullable=True)
@@ -203,6 +231,7 @@ class PadraoOportunidade(Base):
     __tablename__ = "padroes_oportunidade"
 
     id = Column(Integer, primary_key=True)
+    tenant_id = Column(String(36), ForeignKey("tenants.id"), nullable=True, index=True)
     nome = Column(String(100), nullable=False)       # label exibido na UI (ex: "Alvará de Levantamento")
     expressao = Column(String(200), nullable=False)  # frase buscada via ILIKE (ex: "alvará de levantamento")
     tipo = Column(String(20), nullable=False, default='positivo')  # 'positivo' ou 'negativo'
@@ -220,6 +249,7 @@ class ClassificacaoProcesso(Base):
     __tablename__ = "classificacoes_processo"
 
     id = Column(Integer, primary_key=True)
+    tenant_id = Column(String(36), ForeignKey("tenants.id"), nullable=True, index=True)
     pessoa_id = Column(Integer, ForeignKey("pessoas_monitoradas.id"), nullable=False, index=True)
     numero_processo = Column(String(30), nullable=False, index=True)  # normalizado (só dígitos)
     papel = Column(String(20))              # CREDOR | DEVEDOR | INDEFINIDO
@@ -246,6 +276,7 @@ class OportunidadeDescartada(Base):
     __tablename__ = "oportunidades_descartadas"
 
     id = Column(Integer, primary_key=True)
+    tenant_id = Column(String(36), ForeignKey("tenants.id"), nullable=True, index=True)
     pessoa_id = Column(Integer, ForeignKey("pessoas_monitoradas.id"), nullable=False, index=True)
     numero_processo = Column(String(50), nullable=False)  # normalizado (só dígitos)
     descartado_em = Column(DateTime, default=datetime.utcnow)
@@ -266,6 +297,7 @@ class Alerta(Base):
     __tablename__ = "alertas"
 
     id = Column(Integer, primary_key=True)
+    tenant_id = Column(String(36), ForeignKey("tenants.id"), nullable=True, index=True)
     pessoa_id = Column(Integer, ForeignKey("pessoas_monitoradas.id"), nullable=False, index=True)
     publicacao_id = Column(Integer, ForeignKey("publicacoes_monitoradas.id"), nullable=False)
     tipo = Column(String(50), default="NOVA_PUBLICACAO")
@@ -282,3 +314,82 @@ class Alerta(Base):
 
     def __repr__(self):
         return f"<Alerta(pessoa_id={self.pessoa_id}, tipo='{self.tipo}', lido={self.lido})>"
+
+
+# ===== Autenticação e Usuários =====
+
+
+class User(Base):
+    """Usuário do sistema (membro da equipe do escritório/tenant)."""
+
+    __tablename__ = "users"
+
+    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    tenant_id = Column(String(36), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False, index=True)
+    email = Column(String(255), nullable=False, index=True)
+    password_hash = Column(String(255), nullable=False)
+    name = Column(String(255), nullable=False)
+    role = Column(String(20), nullable=False, default="leitura")
+    is_active = Column(Boolean, default=True)
+
+    # Controle de acesso
+    last_login_at = Column(DateTime, nullable=True)
+    password_changed_at = Column(DateTime, default=datetime.utcnow)
+    failed_login_attempts = Column(Integer, default=0)
+    locked_until = Column(DateTime, nullable=True)
+    must_change_password = Column(Boolean, default=False)
+
+    # Metadata
+    created_by = Column(String(36), ForeignKey("users.id"), nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    refresh_tokens = relationship("RefreshToken", back_populates="user", cascade="all, delete-orphan")
+    audit_logs = relationship("AuthAuditLog", back_populates="user", foreign_keys="AuthAuditLog.user_id")
+
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "email", name="uq_user_email_tenant"),
+    )
+
+    def __repr__(self):
+        return f"<User(email='{self.email}', role='{self.role}', tenant='{self.tenant_id}')>"
+
+
+class RefreshToken(Base):
+    """Refresh tokens com suporte a rotation e detecção de reuso."""
+
+    __tablename__ = "refresh_tokens"
+
+    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    user_id = Column(String(36), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    token_hash = Column(String(64), nullable=False)  # SHA-256
+    family_id = Column(String(36), nullable=False, index=True)
+    is_revoked = Column(Boolean, default=False)
+    expires_at = Column(DateTime, nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    replaced_by = Column(String(36), ForeignKey("refresh_tokens.id"), nullable=True)
+
+    user = relationship("User", back_populates="refresh_tokens")
+
+    def __repr__(self):
+        return f"<RefreshToken(user_id='{self.user_id}', revoked={self.is_revoked})>"
+
+
+class AuthAuditLog(Base):
+    """Log de auditoria para ações de autenticação e gestão de usuários."""
+
+    __tablename__ = "auth_audit_log"
+
+    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    tenant_id = Column(String(36), ForeignKey("tenants.id"), nullable=False, index=True)
+    user_id = Column(String(36), ForeignKey("users.id"), nullable=True, index=True)
+    action = Column(String(50), nullable=False)
+    ip_address = Column(String(45), nullable=True)
+    user_agent = Column(Text, nullable=True)
+    details = Column(JSON, default=dict)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    user = relationship("User", back_populates="audit_logs", foreign_keys=[user_id])
+
+    def __repr__(self):
+        return f"<AuthAuditLog(action='{self.action}', user_id='{self.user_id}')>"
