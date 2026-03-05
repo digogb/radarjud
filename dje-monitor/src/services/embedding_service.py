@@ -231,9 +231,11 @@ def encode(text: str, prefix: str = "search_document") -> list:
 
     if _is_openai_model(cfg.embedding_model):
         client = _get_openai_client()
+        # text-embedding-3-small: limite de 8192 tokens (~4 chars/token para português)
+        safe_text = text[:30000]
         response = client.embeddings.create(
             model=cfg.embedding_model,
-            input=text,
+            input=safe_text,
             dimensions=cfg.embedding_dims,
         )
         return response.data[0].embedding
@@ -256,10 +258,13 @@ def _encode_batch(texts: list[str], prefix: str = "search_document", batch_size:
     if _is_openai_model(cfg.embedding_model):
         client = _get_openai_client()
         all_embeddings = []
-        # OpenAI suporta até 2048 inputs, mas 500 é seguro para textos longos
+        # text-embedding-3-small: limite de 8192 tokens (~4 chars/token para português)
+        # Truncar cada texto para 30000 chars (~7500 tokens) com margem de segurança
+        safe_texts = [t[:30000] for t in texts]
+        # Enviar em sub-batches de 500 (limite seguro para payload)
         openai_batch = 500
-        for i in range(0, len(texts), openai_batch):
-            chunk = texts[i: i + openai_batch]
+        for i in range(0, len(safe_texts), openai_batch):
+            chunk = safe_texts[i: i + openai_batch]
             response = client.embeddings.create(
                 model=cfg.embedding_model,
                 input=chunk,
