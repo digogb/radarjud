@@ -3,11 +3,15 @@ Serviço de Embedding Semântico.
 
 Responsável por:
 - Gerenciar conexão com Qdrant
-- Carregar modelo Nomic (lazy loading / singleton)
+- Gerar embeddings via OpenAI API (padrão) ou modelo Nomic local (fallback)
 - Criar collections com índices
 - Montar texto concatenado para embedding
 - Indexar publicação (encode + upsert)
 - Busca semântica (encode query + search + filtros)
+
+Configuração via DJE_EMBEDDING_MODEL:
+  text-embedding-3-small (padrão) → usa OpenAI API (requer DJE_OPENAI_API_KEY)
+  nomic-ai/nomic-embed-text-v1.5  → usa sentence-transformers local (alto uso de RAM)
 """
 
 import json
@@ -19,9 +23,10 @@ from typing import Optional
 
 logger = logging.getLogger(__name__)
 
-# Singleton para evitar recarregar modelo a cada task
-_model = None
-_client = None
+# Singletons — apenas um deles é inicializado dependendo do provider configurado
+_model = None        # sentence-transformers (nomic)
+_openai_client = None
+_qdrant_client = None
 _collections_ready = False
 
 # Legacy globals (mantidos por compatibilidade e uso durante migração)
@@ -63,26 +68,54 @@ def _get_config():
     return Config()
 
 
+def _is_openai_model(model_name: str) -> bool:
+    """Retorna True se o modelo configurado é da OpenAI (ex: text-embedding-3-small)."""
+    return model_name.startswith("text-embedding-")
+
+
+# ---------------------------------------------------------------------------
+# Providers de Embedding
+# ---------------------------------------------------------------------------
+
+def _get_openai_client():
+    """Retorna cliente OpenAI (singleton). Usado quando embedding_model é OpenAI."""
+    global _openai_client
+    if _openai_client is None:
+        from openai import OpenAI
+        cfg = _get_config()
+        if not cfg.openai_api_key:
+            raise RuntimeError(
+                "DJE_OPENAI_API_KEY não configurado. "
+                "Configure a chave para usar embeddings OpenAI."
+            )
+        _openai_client = OpenAI(api_key=cfg.openai_api_key)
+        logger.info(f"Cliente OpenAI para embeddings inicializado (modelo: {cfg.embedding_model})")
+    return _openai_client
+
+
 def get_model():
-    """Retorna modelo Nomic (singleton, carregado na primeira chamada)."""
+    """Retorna modelo Nomic local (singleton). Usado quando embedding_model é nomic.
+
+    ATENÇÃO: carrega ~440MB de RAM. Use apenas se DJE_EMBEDDING_MODEL apontar para modelo local.
+    """
     global _model
     if _model is None:
         from sentence_transformers import SentenceTransformer
         cfg = _get_config()
-        logger.info(f"Carregando modelo {cfg.embedding_model}...")
+        logger.info(f"Carregando modelo local {cfg.embedding_model} (alta memória)...")
         _model = SentenceTransformer(cfg.embedding_model, trust_remote_code=True)
-        logger.info("Modelo carregado.")
+        logger.info("Modelo local carregado.")
     return _model
 
 
 def get_client():
     """Retorna cliente Qdrant (singleton)."""
-    global _client
-    if _client is None:
+    global _qdrant_client
+    if _qdrant_client is None:
         from qdrant_client import QdrantClient
         cfg = _get_config()
-        _client = QdrantClient(url=cfg.qdrant_url, timeout=30)
-    return _client
+        _qdrant_client = QdrantClient(url=cfg.qdrant_url, timeout=30)
+    return _qdrant_client
 
 
 def ensure_collections(tenant_id: "str | None" = None):
@@ -128,6 +161,10 @@ def ensure_collections(tenant_id: "str | None" = None):
 
     _collections_ready = True
 
+
+# ---------------------------------------------------------------------------
+# Construção de texto para embedding
+# ---------------------------------------------------------------------------
 
 def build_publicacao_text(pub: dict) -> str:
     """Concatena campos relevantes da publicação para gerar embedding rico."""
@@ -180,14 +217,69 @@ def build_processo_text(processo: dict) -> str:
     return " ".join(p for p in parts if p).strip()
 
 
+# ---------------------------------------------------------------------------
+# encode() — roteado automaticamente para OpenAI ou nomic
+# ---------------------------------------------------------------------------
+
 def encode(text: str, prefix: str = "search_document") -> list:
-    """Gera embedding com prefixo Nomic e truncamento Matryoshka."""
+    """Gera embedding para um texto.
+
+    - OpenAI (text-embedding-*): ignora prefix, envia texto diretamente
+    - Nomic local: aplica prefix Matryoshka e trunca para embedding_dims
+    """
     cfg = _get_config()
+
+    if _is_openai_model(cfg.embedding_model):
+        client = _get_openai_client()
+        response = client.embeddings.create(
+            model=cfg.embedding_model,
+            input=text,
+            dimensions=cfg.embedding_dims,
+        )
+        return response.data[0].embedding
+
+    # Nomic local
     model = get_model()
     full_text = f"{prefix}: {text}"
     vector = model.encode(full_text, normalize_embeddings=True).tolist()
     return vector[: cfg.embedding_dims]
 
+
+def _encode_batch(texts: list[str], prefix: str = "search_document", batch_size: int = 32) -> list:
+    """Gera embeddings para uma lista de textos.
+
+    - OpenAI: envia em sub-batches de 500 (limite seguro para payload)
+    - Nomic local: usa model.encode() com batch_size
+    """
+    cfg = _get_config()
+
+    if _is_openai_model(cfg.embedding_model):
+        client = _get_openai_client()
+        all_embeddings = []
+        # OpenAI suporta até 2048 inputs, mas 500 é seguro para textos longos
+        openai_batch = 500
+        for i in range(0, len(texts), openai_batch):
+            chunk = texts[i: i + openai_batch]
+            response = client.embeddings.create(
+                model=cfg.embedding_model,
+                input=chunk,
+                dimensions=cfg.embedding_dims,
+            )
+            # Garantir ordem correta pelo índice
+            ordered = sorted(response.data, key=lambda x: x.index)
+            all_embeddings.extend([item.embedding for item in ordered])
+        return all_embeddings
+
+    # Nomic local
+    model = get_model()
+    prefixed = [f"{prefix}: {t}" for t in texts]
+    vectors = model.encode(prefixed, normalize_embeddings=True, batch_size=batch_size)
+    return [v[: cfg.embedding_dims].tolist() for v in vectors]
+
+
+# ---------------------------------------------------------------------------
+# Indexação individual
+# ---------------------------------------------------------------------------
 
 def index_publicacao(pub_id: int, pub: dict, tenant_id: "str | None" = None):
     """Vetoriza e indexa uma publicação no Qdrant na collection do tenant."""
@@ -276,12 +368,16 @@ def index_processo(processo_id: str, processo: dict, tenant_id: "str | None" = N
     logger.debug(f"Processo {processo_id} indexado no Qdrant.")
 
 
+# ---------------------------------------------------------------------------
+# Indexação em batch
+# ---------------------------------------------------------------------------
+
 def index_publicacoes_batch(items: list, batch_size: int = 32, tenant_id: "str | None" = None) -> int:
     """Vetoriza e indexa um batch de publicações no Qdrant.
 
     Args:
         items: lista de tuplas (pub_id: int, pub: dict)
-        batch_size: tamanho do batch para o modelo de embedding
+        batch_size: tamanho do batch para o modelo local (ignorado no provider OpenAI)
         tenant_id: ID do tenant (ou None para usar o contexto)
 
     Returns:
@@ -289,8 +385,6 @@ def index_publicacoes_batch(items: list, batch_size: int = 32, tenant_id: "str |
     """
     from qdrant_client.models import PointStruct
 
-    cfg = _get_config()
-    model = get_model()
     client = get_client()
     collection = _get_collection_publicacoes(tenant_id)
 
@@ -304,13 +398,13 @@ def index_publicacoes_batch(items: list, batch_size: int = 32, tenant_id: "str |
     if not valid:
         return 0
 
-    texts = [f"search_document: {text}" for _, _, text in valid]
-    vectors = model.encode(texts, normalize_embeddings=True, batch_size=batch_size)
+    texts = [text for _, _, text in valid]
+    vectors = _encode_batch(texts, prefix="search_document", batch_size=batch_size)
 
     points = [
         PointStruct(
             id=pub_id,
-            vector=vectors[i][: cfg.embedding_dims].tolist(),
+            vector=vectors[i],
             payload={
                 "pessoa_id": pub.get("pessoa_id"),
                 "tribunal": pub.get("tribunal"),
@@ -336,15 +430,13 @@ def index_processos_batch(processos: list, batch_size: int = 32, tenant_id: "str
 
     Args:
         processos: lista de dicts com chaves numero_processo, tribunal, publicacoes
-        batch_size: tamanho do batch para o modelo de embedding
+        batch_size: tamanho do batch para o modelo local (ignorado no provider OpenAI)
 
     Returns:
         Número de processos indexados.
     """
     from qdrant_client.models import PointStruct
 
-    cfg = _get_config()
-    model = get_model()
     client = get_client()
     collection = _get_collection_processos(tenant_id)
 
@@ -357,13 +449,13 @@ def index_processos_batch(processos: list, batch_size: int = 32, tenant_id: "str
     if not valid:
         return 0
 
-    texts = [f"search_document: {text}" for _, text in valid]
-    vectors = model.encode(texts, normalize_embeddings=True, batch_size=batch_size)
+    texts = [text for _, text in valid]
+    vectors = _encode_batch(texts, prefix="search_document", batch_size=batch_size)
 
     points = [
         PointStruct(
             id=abs(hash(proc.get("numero_processo", ""))) % (2**63),
-            vector=vectors[i][: cfg.embedding_dims].tolist(),
+            vector=vectors[i],
             payload={
                 "numero_processo": proc.get("numero_processo"),
                 "tribunal": proc.get("tribunal"),
@@ -378,6 +470,10 @@ def index_processos_batch(processos: list, batch_size: int = 32, tenant_id: "str
     logger.debug(f"Batch de {len(points)} processos indexado no Qdrant ({collection}).")
     return len(points)
 
+
+# ---------------------------------------------------------------------------
+# Busca Semântica
+# ---------------------------------------------------------------------------
 
 def _log_score_stats(label: str, scores: list[float], threshold: float) -> None:
     """Loga distribuição de scores para análise de qualidade."""

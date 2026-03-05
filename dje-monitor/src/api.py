@@ -125,6 +125,19 @@ def _init_scheduler():
             max_instances=1,
             replace_existing=True,
         )
+        # Reindex diário de madrugada (garante consistência do Qdrant após falhas incrementais)
+        try:
+            from tasks import reindexar_tudo_task
+            _scheduler.add_job(
+                reindexar_tudo_task.send,
+                "cron", hour=2, minute=0,
+                id="reindex_diario",
+                max_instances=1, replace_existing=True,
+            )
+            logger.info("Reindex diário agendado para 02:00")
+        except Exception as e_reindex:
+            logger.warning(f"Não foi possível agendar reindex diário: {e_reindex}")
+
         # Cleanup diário de tokens expirados e audit logs
         try:
             from tasks import cleanup_expired_auth_tokens, cleanup_old_audit_logs
@@ -161,11 +174,9 @@ def startup_event():
         logger.warning(f"Não foi possível fazer seed de padrões: {e}")
     # Garantir collections do Qdrant
     try:
-        from services.embedding_service import ensure_collections, get_model
+        from services.embedding_service import ensure_collections
         ensure_collections()
         logger.info("Qdrant collections verificadas.")
-        get_model()
-        logger.info("Modelo de embedding carregado.")
     except Exception as e:
         logger.warning(f"Qdrant/Embedding indisponível no startup: {e}")
 

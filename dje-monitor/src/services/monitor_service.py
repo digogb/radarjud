@@ -211,7 +211,9 @@ class MonitorService:
         """Enfileira vetorização assíncrona de uma publicação individual no Qdrant."""
         try:
             from tasks import indexar_publicacao_task
-            indexar_publicacao_task.send(pub.id, pub.to_dict())
+            from db.tenant_context import get_current_tenant_or_none
+            tenant_id = get_current_tenant_or_none() or ""
+            indexar_publicacao_task.send(tenant_id, pub.id, pub.to_dict())
         except Exception as e:
             logger.warning(f"Não foi possível enfileirar indexação da pub {pub.id}: {e}")
 
@@ -221,10 +223,12 @@ class MonitorService:
             return
         try:
             from tasks import indexar_processo_task
+            from db.tenant_context import get_current_tenant_or_none
+            tenant_id = get_current_tenant_or_none() or ""
             for numero_processo in numeros_processo:
                 processo_data = self.repo.get_publicacoes_por_processo(numero_processo)
                 if processo_data:
-                    indexar_processo_task.send(numero_processo, processo_data)
+                    indexar_processo_task.send(tenant_id, numero_processo, processo_data)
         except Exception as e:
             logger.warning(f"Não foi possível enfileirar indexação de processos: {e}")
 

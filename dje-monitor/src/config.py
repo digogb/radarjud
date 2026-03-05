@@ -67,9 +67,11 @@ class Config:
     worker_threads: int = int(os.getenv("DJE_WORKER_THREADS", "8"))
     rate_limit_per_second: float = float(os.getenv("DJE_RATE_LIMIT_PER_SEC", "2.0"))
 
-    # Busca Semântica (Qdrant + Nomic)
+    # Busca Semântica (Qdrant + OpenAI/Nomic)
+    # Provider padrão: OpenAI (text-embedding-3-small) — requer DJE_OPENAI_API_KEY
+    # Para usar modelo local: DJE_EMBEDDING_MODEL=nomic-ai/nomic-embed-text-v1.5
     qdrant_url: str = os.getenv("DJE_QDRANT_URL", "http://qdrant:6333")
-    embedding_model: str = os.getenv("DJE_EMBEDDING_MODEL", "nomic-ai/nomic-embed-text-v1.5")
+    embedding_model: str = os.getenv("DJE_EMBEDDING_MODEL", "text-embedding-3-small")
     embedding_dims: int = int(os.getenv("DJE_EMBEDDING_DIMS", "256"))
     semantic_score_threshold: float = float(os.getenv("DJE_SEMANTIC_SCORE_THRESHOLD", "0.35"))
     semantic_score_threshold_processos: float = float(os.getenv("DJE_SEMANTIC_SCORE_THRESHOLD_PROCESSOS", "0.25"))
