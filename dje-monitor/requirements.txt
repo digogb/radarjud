@@ -1,4 +1,7 @@
 # DJE Monitor - Dependências
+# Pacote de busca reutilizável (local — instalar com: pip install -e ../../dje-search-client)
+# dje-search-client
+
 # Core
 httpx>=0.25.0
 beautifulsoup4>=4.12.0
