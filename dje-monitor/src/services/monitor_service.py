@@ -161,8 +161,20 @@ class MonitorService:
         self.repo.atualizar_total_publicacoes(pessoa.id)
         return novos
 
-    def _buscar(self, nome: str, tribunal_filtro: Optional[str] = None) -> list[dict]:
-        """Executa busca na API DJEN e retorna resultados normalizados (todos os registros)."""
+    def _buscar(
+        self,
+        nome: str,
+        tribunal_filtro: Optional[str] = None,
+        excluir_trf: bool = True,
+    ) -> list[dict]:
+        """
+        Executa busca na API DJEN e retorna resultados normalizados.
+
+        :param nome:           Nome da parte ou número do processo.
+        :param tribunal_filtro: Sigla do tribunal para restringir resultados (ex: "TJCE").
+                                None retorna todos os tribunais.
+        :param excluir_trf:    Se True (padrão), remove publicações de tribunais federais (TRF*).
+        """
         try:
             resultados = self.collector.buscar_por_nome(
                 nome, max_paginas=self.config.monitor_max_paginas
@@ -171,11 +183,11 @@ class MonitorService:
             logger.error(f"Erro na busca DJEN para '{nome}': {e}")
             return []
 
-        # Nunca armazenar publicações de TRF (federal)
-        resultados = [
-            r for r in resultados
-            if not (r.get("siglaTribunal") or r.get("tribunal", "")).upper().startswith("TRF")
-        ]
+        if excluir_trf:
+            resultados = [
+                r for r in resultados
+                if not (r.get("siglaTribunal") or r.get("tribunal", "")).upper().startswith("TRF")
+            ]
 
         if tribunal_filtro:
             resultados = [

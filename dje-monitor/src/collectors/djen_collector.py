@@ -3,6 +3,10 @@ Coletor para o DJEN - Diário de Justiça Eletrônico Nacional (CNJ).
 
 Fonte: https://comunica.pje.jus.br/
 Cobertura: Todos os tribunais que usam PJe.
+
+Este módulo é um wrapper fino sobre o pacote ``dje-search-client``, que contém
+a lógica de busca reutilizável. Qualquer produto que precise consultar o DJEN
+deve usar DJESearchClient diretamente, sem depender deste collector.
 """
 
 import logging
@@ -14,8 +18,8 @@ from urllib.parse import urljoin
 
 from bs4 import BeautifulSoup
 
+from dje_search import DJESearchClient, DJESearchParams
 from .base import BaseCollector, DiarioItem
-from utils.data_normalizer import normalizar_nome
 
 logger = logging.getLogger(__name__)
 
@@ -24,12 +28,11 @@ class DJENCollector(BaseCollector):
     """
     Coletor para o DJEN (comunica.pje.jus.br).
 
-    O DJEN disponibiliza publicações de todos os tribunais que usam PJe.
-    Possui interface de busca textual que permite buscar diretamente por CPF.
+    Implementa a interface BaseCollector do radarjud delegando a busca real
+    ao DJESearchClient do pacote dje-search-client.
     """
 
     BASE_URL = "https://comunica.pje.jus.br"
-    API_URL = "https://comunicaapi.pje.jus.br/api/v1/comunicacao"
 
     # Mapeamento de siglas para IDs de órgão no DJEN
     ORGAOS = {
@@ -56,6 +59,82 @@ class DJENCollector(BaseCollector):
     def __init__(self, tribunal: str = "TJCE", **kwargs):
         super().__init__(tribunal=tribunal, **kwargs)
         self.orgao_id = self.ORGAOS.get(tribunal, tribunal)
+        self._search_client = DJESearchClient(
+            timeout=kwargs.get("timeout", 60),
+            delay=kwargs.get("delay", 1.5),
+            max_retries=kwargs.get("max_retries", 3),
+        )
+
+    # ------------------------------------------------------------------
+    # Métodos da interface BaseCollector
+    # ------------------------------------------------------------------
+
+    def buscar_por_termo(
+        self, termo: str, data_inicio: date = None, data_fim: date = None
+    ) -> list[dict]:
+        """Implementação do método abstrato — delega para buscar_por_nome."""
+        return self.buscar_por_nome(termo, data_inicio=data_inicio, data_fim=data_fim)
+
+    def buscar_por_nome(
+        self,
+        nome: str,
+        data_inicio: date = None,
+        data_fim: date = None,
+        max_paginas: int = 50,
+    ) -> list[dict]:
+        """
+        Busca comunicações no DJEN pelo Nome da Parte ou Número do Processo.
+
+        Auto-detecta se ``nome`` é um número de processo (≥15 dígitos ou
+        contém "-" no formato CNJ) e usa o parâmetro correto da API.
+
+        Retorna lista de dicts no formato legado do radarjud.
+        """
+        logger.info("Buscando '%s' no DJEN — máx %d páginas", nome, max_paginas)
+
+        termo_limpo = re.sub(r"\D", "", nome)
+        is_processo = len(termo_limpo) >= 15 and ("-" in nome or len(termo_limpo) == 20)
+
+        if is_processo:
+            logger.info("Detectado busca por processo: %s", nome)
+            params = DJESearchParams(
+                numero_processo=nome,
+                data_inicio=data_inicio,
+                data_fim=data_fim,
+                max_paginas=max_paginas,
+            )
+        else:
+            params = DJESearchParams(
+                nome_parte=nome,
+                data_inicio=data_inicio,
+                data_fim=data_fim,
+                max_paginas=max_paginas,
+            )
+
+        comunicacoes = self._search_client.buscar(params)
+        return [c.to_dict() for c in comunicacoes]
+
+    def buscar_avancado(self, params: DJESearchParams) -> list[dict]:
+        """
+        Busca com parâmetros completos — expõe toda a capacidade do DJESearchClient.
+
+        Use este método quando precisar buscar por advogado, OAB, CPF/CNPJ
+        ou combinar múltiplos filtros.
+
+        Exemplo::
+
+            resultados = collector.buscar_avancado(DJESearchParams(
+                nome_advogado="JOSE DA SILVA",
+                sigla_tribunal="TJCE",
+                data_inicio=date(2025, 1, 1),
+            ))
+        """
+        comunicacoes = self._search_client.buscar(params)
+        return [c.to_dict() for c in comunicacoes]
+
+    # ------------------------------------------------------------------
+    # Listagem de edições (scraping HTML — não alterado)
+    # ------------------------------------------------------------------
 
     def listar_edicoes(self, data: date) -> list[DiarioItem]:
         """
@@ -64,7 +143,7 @@ class DJENCollector(BaseCollector):
         Faz scraping da página de consulta do DJEN para encontrar
         edições disponíveis.
         """
-        logger.info(f"Listando edições DJEN para {self.tribunal} em {data}")
+        logger.info("Listando edições DJEN para %s em %s", self.tribunal, data)
         items = []
 
         url = f"{self.BASE_URL}/consulta"
@@ -79,342 +158,16 @@ class DJENCollector(BaseCollector):
             return items
 
         try:
-            # O DJEN pode retornar JSON ou HTML dependendo do endpoint
             content_type = response.headers.get("content-type", "")
-
             if "application/json" in content_type:
                 items = self._parse_json_response(response.json(), data)
             else:
                 items = self._parse_html_response(response.text, data)
-        except Exception as e:
-            logger.error(f"Erro ao parsear resposta do DJEN: {e}")
+        except Exception as exc:
+            logger.error("Erro ao parsear resposta do DJEN: %s", exc)
 
-        logger.info(f"Encontradas {len(items)} edições no DJEN")
+        logger.info("Encontradas %d edições no DJEN", len(items))
         return items
-
-    def buscar_por_termo(
-        self, termo: str, data_inicio: date = None, data_fim: date = None
-    ) -> list[dict]:
-        """Implementação do método abstrato - Alias para buscar_por_nome."""
-        return self.buscar_por_nome(termo)
-
-    def buscar_por_termo(
-        self, termo: str, data_inicio: date = None, data_fim: date = None
-    ) -> list[dict]:
-        """Implementação do método abstrato - Alias para buscar_por_nome."""
-        return self.buscar_por_nome(termo)
-
-    def buscar_por_nome(
-        self, nome: str, data_inicio: date = None, data_fim: date = None, max_paginas: int = 50
-    ) -> list[dict]:
-        """
-        Busca comunicações no DJEN pelo Nome da Parte ou Número do Processo.
-        Retorna todos os registros disponíveis (sem filtro de data).
-        """
-        logger.info(f"Buscando '{nome}' no DJEN - Máx {max_paginas} págs")
-        resultados = []
-
-        # Detecção simples de número de processo (CNJ ou apenas números longos)
-        # Formato CNJ: 0000000-00.0000.0.00.0000 (20 digitos + masc)
-        termo_limpo = re.sub(r"\D", "", nome)
-        is_processo = (len(termo_limpo) >= 15 and ("-" in nome or len(termo_limpo) == 20))
-
-        params = {
-            "itensPorPagina": 100,
-            "pagina": 1,
-        }
-
-        if is_processo:
-            params["numeroProcesso"] = nome
-            logger.info(f"Detectado busca por processo: {nome}")
-        else:
-            params["nomeParte"] = nome
-
-        # Loop de paginação
-        while True:
-            logger.info(f"Buscando página {params['pagina']}...")
-            try:
-                response = self._fazer_requisicao(
-                    "GET", self.API_URL, params=params, headers={"Accept": "application/json"}
-                )
-                
-                if response and response.status_code == 200:
-                    # Debug: verificar content type
-                    ct = response.headers.get("content-type", "")
-                    if "html" in ct:
-                         raise ValueError("API retornou HTML")
-
-                    data_resp = response.json()
-                    
-                    novos_items = []
-                    if "items" in data_resp:
-                        novos_items = self._parse_comunicacoes_json(data_resp["items"], nome, pular_filtro_destinatario=is_processo)
-                    elif isinstance(data_resp, list):
-                         novos_items = self._parse_comunicacoes_json(data_resp, nome, pular_filtro_destinatario=is_processo)
-                    
-                    if not novos_items:
-                        break
-                        
-                    resultados.extend(novos_items)
-                    
-                    # Verificar se há mais páginas (baseado no total ou apenas se trouxe items)
-                    total_count = data_resp.get("count", 0) if isinstance(data_resp, dict) else len(novos_items)
-                    # Se trouxe menos que o limite, provavelmente acabou
-                    if len(novos_items) < params["itensPorPagina"]:
-                        break
-                        
-                    params["pagina"] += 1
-                    
-                    # Limite de segurança para não loopar infinito
-                    if params["pagina"] > max_paginas:
-                        logger.warning(f"Limite de {max_paginas} páginas atingido na busca por nome.")
-                        break
-                else:
-                    logger.warning(f"Erro na requisição (Pag {params['pagina']}): Status {response.status_code if response else 'None'}")
-                    # Se der erro 404 ou 500 na paginação, paramos
-                    break
-                    
-            except Exception as e:
-                logger.warning(f"Erro na API direta ({self.API_URL}): {e}")
-                break
-
-        # Deduplicar por (processo, data_disponibilizacao) para evitar duplicatas quando
-        # o mesmo processo aparece em múltiplas seções/órgãos do DJe no mesmo dia.
-        # Publicações do mesmo processo em DATAS DIFERENTES são eventos distintos e devem
-        # ser preservadas (ex: 5 intimações ao longo dos meses no mesmo processo).
-        def _parse_data(r: dict) -> str:
-            """Retorna data no formato YYYY-MM-DD para ordenação; string vazia se inválida."""
-            raw = r.get("data_disponibilizacao", "")
-            if not raw:
-                return ""
-            partes = raw.split("/")
-            if len(partes) == 3:
-                return f"{partes[2]}-{partes[1]}-{partes[0]}"
-            return raw
-
-        por_processo_data: dict = {}
-        sem_numero = []
-        for r in resultados:
-            proc = re.sub(r"\D", "", r.get("processo", ""))
-            if not proc:
-                sem_numero.append(r)
-                continue
-            data = r.get("data_disponibilizacao", "")
-            key = f"{proc}|{data}"
-            existente = por_processo_data.get(key)
-            if existente is None or _parse_data(r) >= _parse_data(existente):
-                por_processo_data[key] = r
-
-        return list(por_processo_data.values()) + sem_numero
-
-
-
-
-    def _parse_comunicacoes_json(self, items: list, termo: str, pular_filtro_destinatario: bool = False) -> list[dict]:
-        """Parseia comunicações retornadas pela API JSON."""
-        resultados = []
-        # Normaliza o termo removendo acentos para comparação robusta
-        termo_norm = normalizar_nome(termo)
-
-        for item in items:
-            try:
-                # Verificar dados de destinatários
-                destinatarios = item.get("destinatarios", [])
-
-                # Se NÃO for busca por processo, filtrar pelo nome do destinatário
-                # Usa normalizar_nome em ambos os lados para ignorar diferenças de acento
-                # Ex: "JOAO" (planilha) casa com "JOÃO" (API)
-                if not pular_filtro_destinatario:
-                    encontrou_exato = False
-                    for dest in destinatarios:
-                        nome_dest = dest.get("nome", "")
-                        if normalizar_nome(nome_dest) == termo_norm:
-                            encontrou_exato = True
-                            break
-
-                    if not encontrou_exato:
-                        continue
-
-                # Obter texto bruto (pode vir como 'texto' ou 'conteudo')
-                raw_texto = item.get("texto") or item.get("conteudo") or ""
-                texto_conteudo = self._limpar_html(raw_texto)
-
-                # Extrair dados ricos do JSON tentando múltiplas chaves
-                processo = (
-                    item.get("numeroprocessocommascara") or 
-                    item.get("numeroProcesso") or 
-                    item.get("numero_processo") or ""
-                )
-                
-                data_disp = (
-                    item.get("datadisponibilizacao") or 
-                    item.get("dataDisponibilizacao") or 
-                    item.get("data_disponibilizacao") or ""
-                )
-                
-                orgao = item.get("nomeOrgao", "")
-
-                # Fallback: Extrair do texto se não veio no JSON
-                if not processo:
-                    match_proc = re.search(r"\d{7}-\d{2}\.\d{4}\.\d\.\d{2}\.\d{4}", texto_conteudo)
-                    if match_proc:
-                        processo = match_proc.group(0)
-                
-                if not data_disp:
-                    match_data = re.search(r"\d{2}/\d{2}/\d{4}", texto_conteudo)
-                    if match_data:
-                        data_disp = match_data.group(0)
-                
-                if not orgao:
-                    # Tentar extrair sigla de tribunal ou vara do texto
-                    orgao = item.get("siglaTribunal", self.tribunal)
-
-                # Extração de polos baseada EXCLUSIVAMENTE nos dados estruturados da API
-                polos = {"ativo": [], "passivo": [], "outros": []}
-                
-                # Iterar sobre todos os destinatários retornados
-                todos_destinatarios = item.get("destinatarios", [])
-                for dest in todos_destinatarios:
-                    nome = dest.get("nome", "").strip()
-                    if not nome: continue
-                    
-                    # Tentar identificar o polo pelos campos da API (polo, tipoParte, etc)
-                    # O usuário confirmou: 'A' = Ativo, 'P' = Passivo
-                    tipo_polo = str(dest.get("polo", "")).upper()
-                    
-                    if tipo_polo == "A" or "ATIVO" in tipo_polo or "AUTOR" in tipo_polo:
-                        polos["ativo"].append(nome)
-                    elif tipo_polo == "P" or "PASSIVO" in tipo_polo or "REU" in tipo_polo or "RÉU" in tipo_polo:
-                        polos["passivo"].append(nome)
-                    else:
-                        # Se não tiver classificação, vai para lista genérica
-                        polos["outros"].append(nome)
-
-                # Fallback: se não identificou polos via API, tenta extrair do texto
-                if not polos["ativo"] and not polos["passivo"] and texto_conteudo:
-                    polos_texto = self._extrair_polos_do_texto(texto_conteudo)
-                    if polos_texto["ativo"] or polos_texto["passivo"]:
-                        polos = polos_texto
-
-                res = {
-                    "tribunal": item.get("siglaTribunal", self.tribunal),
-                    "processo": processo,
-                    "data_disponibilizacao": data_disp,
-                    "orgao": orgao,
-                    "tipo_comunicacao": item.get("tipoComunicacao", ""),
-                    "texto": texto_conteudo,
-                    "meio": item.get("meio", ""),
-                    "link": item.get("link", ""),
-                    "id": item.get("id", ""),
-                    "termo_buscado": termo,
-                    "fonte": "DJEN API",
-                    # Dados extras para contexto
-                    "partes": [d.get("nome", "") for d in destinatarios], # Legado (filtrado pela busca)
-                    "polos": polos, # Estrutura completa
-                    "raw_data": item 
-                }
-                
-                # Se não tiver texto no item principal, tentar montar do HTML ou buscar link
-                if not res["texto"] and res["id"]:
-                     res["texto"] = f"Comunicação ID {res['id']} - Ver link: {res['link']}"
-
-                resultados.append(res)
-            except Exception as e:
-                logger.error(f"Erro ao parsear item JSON: {e}")
-                
-        return resultados
-
-    def _extrair_polos_do_texto(self, texto: str) -> dict:
-        """
-        Tenta extrair polos ativo e passivo do texto da publicação usando Regex.
-        Retorna dict com listas de nomes.
-        Refinado para evitar capturar o corpo do texto.
-        """
-        if not texto:
-            return {"ativo": [], "passivo": [], "outros": []}
-            
-        polos = {"ativo": [], "passivo": [], "outros": []}
-        texto_upper = texto.upper()
-        
-        # Regex patterns refinados
-        # Pega até encontrar :, \n, ou ponto final (exceto abreviações comuns protejidas depois)
-        # Limita a captura para evitar pegar o texto inteiro
-        patterns = {
-            "ativo": [
-                r"(?:AUTOR|EXEQUENTE|REQUERENTE|IMPETRANTE|EMBARGANTE|SUSCITANTE|APELANTE|AGRAVANTE|RECORRENTE)[AEIS]*\s*[:]\s*([^:\n]{3,180})"
-            ],
-            "passivo": [
-                r"(?:R[ÉE]U|EXECUTADO|REQUERIDO|IMPETRADO|EMBARGADO|SUSCITADO|APELADO|AGRAVADO|RECORRIDO)[AEIS]*\s*[:]\s*([^:\n]{3,180})"
-            ],
-            "outros": [
-                r"(?:ADVOGAD[OA]|PATRONO)[S]*\s*[:]\s*([^:\n]{3,180})"
-            ]
-        }
-        
-        # Expressão para limpar o nome capturado
-        def limpar_nome(raw_nome):
-            # Remove marcadores de fim comuns que possam ter vindo
-            # Pára em " - ", " Advogado", " Juiz", etc
-            token_fim = re.split(r"\s-\s|ADVOGAD|R[ÉE]U|AUTOR|JUIZ|OAB|CPF|CNPJ|\.\s|;|(?:\s\w{2}\s)", raw_nome)
-            nome = token_fim[0]
-            return nome.strip().title()
-
-        for tipo, lista_patterns in patterns.items():
-            for pat in lista_patterns:
-                matches = re.finditer(pat, texto_upper)
-                for match in matches:
-                    conteudo = match.group(1)
-                    # Se tiver vírgula, pode ser lista de nomes
-                    nomes_brutos = conteudo.split(',')
-                    
-                    for nb in nomes_brutos:
-                        nome_limpo = limpar_nome(nb)
-                        
-                        # Critérios de Aceite:
-                        # 1. Tamanho razoável (3 a 80 chars)
-                        # 2. Não deve ser uma frase longa (contar palavras)
-                        if 3 < len(nome_limpo) < 80:
-                            # Se tiver mais de 10 palavras, provavelmente é lixo
-                            if len(nome_limpo.split()) > 10:
-                                continue
-                                
-                            # Filtrar "nomes" que são na verdade inícios de frases comuns
-                            if nome_limpo.upper() in ["A", "O", "OS", "AS", "DE", "DA", "DO", "EM", "NA", "NO"]:
-                                continue
-                                
-                            if nome_limpo not in polos[tipo]:
-                                polos[tipo].append(nome_limpo)
-                            
-        return polos
-
-    def _limpar_html(self, html_content: str) -> str:
-        """Limpa tags HTML e retira apenas o texto legível."""
-        if not html_content:
-            return ""
-        try:
-            soup = BeautifulSoup(html_content, "html.parser")
-            
-            # Remover scripts e estilos
-            for script in soup(["script", "style", "header", "footer", "nav"]):
-                script.decompose()
-
-            # Quebrar linhas em tags de bloco para garantir separação
-            for br in soup.find_all("br"):
-                br.replace_with("\n")
-            for tag in soup.find_all(["p", "div", "li", "tr"]):
-                tag.insert_after("\n")
-
-            text = soup.get_text(separator="\n")
-            
-            # Limpar espaços extras
-            lines = (line.strip() for line in text.splitlines())
-            chunks = (phrase.strip() for line in lines for phrase in line.split("  "))
-            text = '\n'.join(chunk for chunk in chunks if chunk)
-            
-            return text
-        except Exception as e:
-            logger.warning(f"Erro ao limpar HTML: {e}")
-            return html_content
 
     def obter_url_pdf_diario(self, diario_id: str) -> Optional[str]:
         """Obtém URL de download do PDF de um diário específico."""
@@ -424,13 +177,13 @@ class DJENCollector(BaseCollector):
             return url
         return None
 
+    # ------------------------------------------------------------------
+    # Parsing de edições (legado — scraping HTML/JSON)
+    # ------------------------------------------------------------------
+
     def _parse_json_response(self, data: dict, dt: date) -> list[DiarioItem]:
-        """Parseia resposta JSON do DJEN."""
         items = []
-
-        # Estrutura pode variar - tentamos formatos conhecidos
         diarios = data if isinstance(data, list) else data.get("diarios", [])
-
         for diario in diarios:
             try:
                 item = DiarioItem(
@@ -447,33 +200,22 @@ class DJENCollector(BaseCollector):
                     metadata={"fonte": "DJEN", "diario_id": diario.get("id")},
                 )
                 items.append(item)
-            except Exception as e:
-                logger.warning(f"Erro ao parsear diário DJEN: {e}")
-
+            except Exception as exc:
+                logger.warning("Erro ao parsear diário DJEN: %s", exc)
         return items
 
     def _parse_html_response(self, html: str, dt: date) -> list[DiarioItem]:
-        """Parseia resposta HTML do DJEN."""
         items = []
         soup = BeautifulSoup(html, "html.parser")
-
-        # Busca links de download de diários
-        # Padrões comuns no DJEN:
-        # - Links com classe específica
-        # - Tabelas com listagem de edições
         for link in soup.select("a[href*='download'], a[href*='diario']"):
             href = link.get("href", "")
             if not href:
                 continue
-
             texto = link.get_text(strip=True)
             url_pdf = urljoin(self.BASE_URL, href)
-
-            # Tentar extrair número do caderno do texto ou atributos
             caderno = self._extrair_caderno(link, texto)
             edicao = self._extrair_edicao(link, texto)
-
-            item = DiarioItem(
+            items.append(DiarioItem(
                 tribunal=self.tribunal,
                 data_publicacao=dt,
                 caderno=caderno,
@@ -481,93 +223,19 @@ class DJENCollector(BaseCollector):
                 url_pdf=url_pdf,
                 edicao=edicao,
                 metadata={"fonte": "DJEN"},
-            )
-            items.append(item)
-
+            ))
         return items
 
-    def _parse_busca_json(self, data: dict, termo: str) -> list[dict]:
-        """Parseia resultados de busca JSON."""
-        resultados = []
-        items = data if isinstance(data, list) else data.get("resultados", [])
-
-        for item in items:
-            resultados.append(
-                {
-                    "tribunal": self.tribunal,
-                    "data": item.get("dataPublicacao", ""),
-                    "caderno": item.get("caderno", ""),
-                    "texto": item.get("conteudo", item.get("texto", "")),
-                    "url": urljoin(self.BASE_URL, item.get("link", "")),
-                    "termo_buscado": termo,
-                    "fonte": "DJEN",
-                }
-            )
-
-        return resultados
-
-    def _parse_busca_html(self, html: str, termo: str) -> list[dict]:
-        """Parseia resultados de busca HTML."""
-        resultados = []
-        soup = BeautifulSoup(html, "html.parser")
-
-        # Busca por elementos que contenham resultados
-        # Busca por elementos que contenham resultados (cards de comunicação)
-        # Adaptado para o layout da imagem (cards com azul no topo)
-        for card in soup.select("div.card, div.resultado, app-comunicacao-card"):
-            texto_full = card.get_text(" ", strip=True)
-            
-            # Tentar extrair número do processo (padrão NNNNNNN-DD.AAAA.J.TR.OOOO)
-            proc_match = re.search(r"\d{7}-\d{2}\.\d{4}\.\d\.\d{2}\.\d{4}", texto_full)
-            processo = proc_match.group(0) if proc_match else ""
-
-            # Extrair data (DD/MM/AAAA)
-            data_match = re.search(r"\d{2}/\d{2}/\d{4}", texto_full)
-            data_disp = data_match.group(0) if data_match else ""
-            
-            # Extrair órgão (geralmente logo no início ou após rótulo)
-            orgao = ""
-            if "Órgão:" in texto_full:
-                parts = texto_full.split("Órgão:")
-                if len(parts) > 1:
-                    orgao = parts[1].split("\n")[0].split("Data")[0].strip()
-
-            resultados.append(
-                {
-                    "tribunal": self.tribunal,
-                    "processo": processo,
-                    "data_disponibilizacao": data_disp,
-                    "orgao": orgao,
-                    "texto": texto_full[:3000], # Limitar tamanho
-                    "termo_buscado": termo,
-                    "fonte": "DJEN HTML",
-                }
-            )
-
-        return resultados
-
     def _extrair_caderno(self, element, texto: str) -> str:
-        """Tenta extrair identificador do caderno."""
-        # Busca em atributos data-*
         for attr in element.attrs:
             if "caderno" in attr.lower():
                 return str(element[attr])
-
-        # Busca no texto
         match = re.search(r"caderno\s*(\d+)", texto, re.IGNORECASE)
-        if match:
-            return match.group(1)
-
-        return "0"
+        return match.group(1) if match else "0"
 
     def _extrair_edicao(self, element, texto: str) -> str:
-        """Tenta extrair número da edição."""
         for attr in element.attrs:
             if "edicao" in attr.lower() or "numero" in attr.lower():
                 return str(element[attr])
-
         match = re.search(r"(?:edi[çc][aã]o|n[úu]mero)\s*(\d+)", texto, re.IGNORECASE)
-        if match:
-            return match.group(1)
-
-        return ""
+        return match.group(1) if match else ""
