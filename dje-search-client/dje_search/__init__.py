@@ -7,15 +7,16 @@ Cliente reutilizável para a API de busca do DJEN
 
 Exportações principais::
 
-    from dje_search import DJESearchClient, DJESearchParams, DJEComunicacao, DJEPolo
+    from dje_search import DJESearchClient, DJESearchParams, DJEComunicacao, DJEPolo, DJEAdvogado
 """
 
 from .client import DJESearchClient
-from .models import DJEComunicacao, DJEPolo, DJESearchParams
+from .models import DJEAdvogado, DJEComunicacao, DJEPolo, DJESearchParams
 
 __all__ = [
     "DJESearchClient",
     "DJESearchParams",
     "DJEComunicacao",
     "DJEPolo",
+    "DJEAdvogado",
 ]

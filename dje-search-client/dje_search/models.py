@@ -103,6 +103,24 @@ class DJEPolo:
 
 
 @dataclass
+class DJEAdvogado:
+    """Advogado vinculado a uma comunicação."""
+
+    id: int = 0
+    nome: str = ""
+    numero_oab: str = ""
+    uf_oab: str = ""
+
+    def to_dict(self) -> dict:
+        return {
+            "id": self.id,
+            "nome": self.nome,
+            "numero_oab": self.numero_oab,
+            "uf_oab": self.uf_oab,
+        }
+
+
+@dataclass
 class DJEComunicacao:
     """
     Comunicação/publicação retornada pela API DJEN.
@@ -122,8 +140,20 @@ class DJEComunicacao:
     termo_buscado: str
     fonte: str = "DJEN API"
     meio: str = ""
+    meio_completo: str = ""
+    id_orgao: int = 0
+    tipo_documento: str = ""
+    nome_classe: str = ""
+    codigo_classe: str = ""
+    numero_comunicacao: int = 0
+    ativo: bool = True
+    hash: str = ""
+    status: str = ""
+    motivo_cancelamento: Optional[str] = None
+    data_cancelamento: Optional[str] = None
     polos: DJEPolo = field(default_factory=DJEPolo)
     destinatarios: list[str] = field(default_factory=list)
+    advogados: list[DJEAdvogado] = field(default_factory=list)
     raw_data: dict = field(default_factory=dict)
 
     def to_dict(self) -> dict:
@@ -134,13 +164,25 @@ class DJEComunicacao:
             "processo": self.numero_processo,
             "data_disponibilizacao": self.data_disponibilizacao,
             "orgao": self.orgao,
+            "id_orgao": self.id_orgao,
             "tipo_comunicacao": self.tipo_comunicacao,
             "texto": self.texto,
             "link": self.link,
             "termo_buscado": self.termo_buscado,
             "fonte": self.fonte,
             "meio": self.meio,
+            "meio_completo": self.meio_completo,
+            "tipo_documento": self.tipo_documento,
+            "nome_classe": self.nome_classe,
+            "codigo_classe": self.codigo_classe,
+            "numero_comunicacao": self.numero_comunicacao,
+            "ativo": self.ativo,
+            "hash": self.hash,
+            "status": self.status,
+            "motivo_cancelamento": self.motivo_cancelamento,
+            "data_cancelamento": self.data_cancelamento,
             "polos": self.polos.to_dict(),
             "partes": self.destinatarios,
+            "advogados": [a.to_dict() for a in self.advogados],
             "raw_data": self.raw_data,
         }

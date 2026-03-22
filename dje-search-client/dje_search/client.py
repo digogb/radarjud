@@ -43,7 +43,7 @@ from typing import Optional
 
 import httpx
 
-from .models import DJEComunicacao, DJEPolo, DJESearchParams
+from .models import DJEAdvogado, DJEComunicacao, DJEPolo, DJESearchParams
 from .utils import (
     create_legacy_ssl_context,
     extrair_numero_processo,
@@ -259,19 +259,41 @@ class DJESearchClient:
             or ""
         )
 
+        advogados = []
+        for da in item.get("destinatarioadvogados", []):
+            adv = da.get("advogado", {})
+            advogados.append(DJEAdvogado(
+                id=adv.get("id", 0),
+                nome=adv.get("nome", ""),
+                numero_oab=adv.get("numero_oab", ""),
+                uf_oab=adv.get("uf_oab", ""),
+            ))
+
         return DJEComunicacao(
             id=str(item.get("id", "")),
             tribunal=item.get("siglaTribunal", ""),
             numero_processo=processo or "",
             data_disponibilizacao=data_disp,
             orgao=orgao,
+            id_orgao=item.get("idOrgao", 0),
             tipo_comunicacao=item.get("tipoComunicacao", ""),
             texto=texto,
             link=item.get("link", ""),
             meio=item.get("meio", ""),
+            meio_completo=item.get("meiocompleto", ""),
+            tipo_documento=item.get("tipoDocumento", ""),
+            nome_classe=item.get("nomeClasse", ""),
+            codigo_classe=str(item.get("codigoClasse", "")),
+            numero_comunicacao=item.get("numeroComunicacao", 0),
+            ativo=item.get("ativo", True),
+            hash=item.get("hash", ""),
+            status=item.get("status", ""),
+            motivo_cancelamento=item.get("motivo_cancelamento"),
+            data_cancelamento=item.get("data_cancelamento"),
             termo_buscado=termo_buscado,
             polos=polos,
             destinatarios=[d.get("nome", "") for d in item.get("destinatarios", [])],
+            advogados=advogados,
             raw_data=item,
         )
 
