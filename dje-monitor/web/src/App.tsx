@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { Routes, Route, NavLink, useLocation } from 'react-router-dom'
+import { Routes, Route, NavLink } from 'react-router-dom'
 import { LayoutDashboard, Search, Eye, Bell, Radar, TrendingUp, Settings, LogOut, User, KeyRound, Sun, Moon, Menu, X } from 'lucide-react'
 import Dashboard from './pages/Dashboard'
 import Busca from './pages/Busca'
@@ -18,7 +18,6 @@ function AppLayout() {
   const { user, logout } = useAuth()
   const { theme, toggleTheme } = useTheme()
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false)
-  const location = useLocation()
 
   const navItems = [
     { path: '/', icon: LayoutDashboard, label: 'Dashboard', shortLabel: 'Home' },
