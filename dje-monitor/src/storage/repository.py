@@ -15,6 +15,11 @@ from sqlalchemy.orm import Session, sessionmaker, joinedload
 
 from .models import Base, CPFMonitorado, DiarioProcessado, Ocorrencia, PessoaMonitorada, PublicacaoMonitorada, Alerta, PadraoOportunidade, ClassificacaoProcesso, OportunidadeDescartada
 
+try:
+    from db.tenant_context import get_current_tenant_or_none as _get_tid
+except ImportError:
+    def _get_tid(): return None
+
 logger = logging.getLogger(__name__)
 
 
@@ -104,7 +109,7 @@ class DiarioRepository:
                 session.commit()
                 return existente
 
-            cpf_obj = CPFMonitorado(cpf=cpf, nome=nome, ativo=True)
+            cpf_obj = CPFMonitorado(tenant_id=_get_tid(), cpf=cpf, nome=nome, ativo=True)
             session.add(cpf_obj)
             session.flush()
             session.expunge(cpf_obj)
@@ -199,6 +204,7 @@ class DiarioRepository:
                 return existente
 
             diario = DiarioProcessado(
+                tenant_id=_get_tid(),
                 tribunal=tribunal,
                 fonte=fonte,
                 data_publicacao=data_publicacao,
@@ -262,6 +268,7 @@ class DiarioRepository:
         """Registra uma nova ocorrência de CPF encontrada."""
         with self.get_session() as session:
             ocorrencia = Ocorrencia(
+                tenant_id=_get_tid(),
                 cpf_monitorado_id=cpf_id,
                 diario_id=diario_id,
                 pagina=pagina,
@@ -398,11 +405,8 @@ class DiarioRepository:
                 session.commit()
                 return existente
 
-            from db.tenant_context import get_current_tenant_or_none
-            _tenant_id = get_current_tenant_or_none()
-
             pessoa = PessoaMonitorada(
-                tenant_id=_tenant_id,
+                tenant_id=_get_tid(),
                 nome=nome,
                 cpf=cpf,
                 tribunal_filtro=tribunal_filtro,
@@ -641,16 +645,9 @@ class DiarioRepository:
         Registra uma nova publicação encontrada para uma pessoa monitorada.
         Se gerar_alerta=False (first check), não cria alerta.
         """
-        tenant_id = None
-        try:
-            from db.tenant_context import get_current_tenant_or_none
-            tenant_id = get_current_tenant_or_none()
-        except Exception:
-            pass
-
         with self.get_session() as session:
             pub = PublicacaoMonitorada(
-                tenant_id=tenant_id,
+                tenant_id=_get_tid(),
                 pessoa_id=pessoa_id,
                 hash_unico=hash_unico,
                 comunicacao_id=dados.get("id") or dados.get("comunicacao_id"),
@@ -773,11 +770,8 @@ class DiarioRepository:
     ) -> Alerta:
         """Registra um alerta de nova publicação."""
         with self.get_session() as session:
-            from db.tenant_context import get_current_tenant_or_none
-            _tenant_id = get_current_tenant_or_none()
-
             alerta = Alerta(
-                tenant_id=_tenant_id,
+                tenant_id=_get_tid(),
                 pessoa_id=pessoa_id,
                 publicacao_id=publicacao_id,
                 tipo=tipo,
@@ -1163,13 +1157,15 @@ class DiarioRepository:
             tem_negativos = session.query(PadraoOportunidade).filter(PadraoOportunidade.tipo == 'negativo').count() > 0
 
             if not tem_positivos:
+                tid = _get_tid()
                 for i, (nome, expressao) in enumerate(self._PADROES_PADRAO_POSITIVOS):
-                    session.add(PadraoOportunidade(nome=nome, expressao=expressao, tipo='positivo', ativo=True, ordem=i))
+                    session.add(PadraoOportunidade(tenant_id=tid, nome=nome, expressao=expressao, tipo='positivo', ativo=True, ordem=i))
                 logger.info(f"padroes_oportunidade: {len(self._PADROES_PADRAO_POSITIVOS)} padrões positivos inseridos")
 
             if not tem_negativos:
+                tid = _get_tid()
                 for i, (nome, expressao) in enumerate(self._PADROES_PADRAO_NEGATIVOS):
-                    session.add(PadraoOportunidade(nome=nome, expressao=expressao, tipo='negativo', ativo=True, ordem=i))
+                    session.add(PadraoOportunidade(tenant_id=tid, nome=nome, expressao=expressao, tipo='negativo', ativo=True, ordem=i))
                 logger.info(f"padroes_oportunidade: {len(self._PADROES_PADRAO_NEGATIVOS)} padrões negativos inseridos")
 
             session.commit()
@@ -1189,7 +1185,7 @@ class DiarioRepository:
     def criar_padrao_oportunidade(self, nome: str, expressao: str, tipo: str = 'positivo') -> dict:
         with self.get_session() as session:
             max_ordem = session.query(func.max(PadraoOportunidade.ordem)).filter(PadraoOportunidade.tipo == tipo).scalar() or 0
-            p = PadraoOportunidade(nome=nome, expressao=expressao, tipo=tipo, ativo=True, ordem=max_ordem + 1)
+            p = PadraoOportunidade(tenant_id=_get_tid(), nome=nome, expressao=expressao, tipo=tipo, ativo=True, ordem=max_ordem + 1)
             session.add(p)
             session.flush()
             result = self._to_dict(p)
@@ -1272,6 +1268,7 @@ class DiarioRepository:
                 classif.atualizado_em = datetime.utcnow()
             else:
                 classif = ClassificacaoProcesso(
+                    tenant_id=_get_tid(),
                     pessoa_id=pessoa_id,
                     numero_processo=digits,
                     papel=papel,
@@ -1372,7 +1369,7 @@ class DiarioRepository:
                 .first()
             )
             if not existente:
-                session.add(OportunidadeDescartada(pessoa_id=pessoa_id, numero_processo=digits))
+                session.add(OportunidadeDescartada(tenant_id=_get_tid(), pessoa_id=pessoa_id, numero_processo=digits))
                 session.commit()
 
     def restaurar_oportunidade(self, pessoa_id: int, numero_processo: str) -> None:
