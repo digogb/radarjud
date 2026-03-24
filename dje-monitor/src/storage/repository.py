@@ -1171,7 +1171,7 @@ class DiarioRepository:
             session.commit()
 
     def _to_dict(self, p: PadraoOportunidade) -> dict:
-        return {"id": p.id, "nome": p.nome, "expressao": p.expressao, "tipo": p.tipo, "ativo": p.ativo, "ordem": p.ordem, "criado_em": p.criado_em.isoformat()}
+        return {"id": p.id, "nome": p.nome, "expressao": p.expressao, "tipo": p.tipo, "ativo": p.ativo, "ordem": p.ordem, "criado_em": p.criado_em.isoformat() if p.criado_em else None}
 
     def listar_padroes_oportunidade(self) -> list[dict]:
         with self.get_session() as session:
