@@ -19,7 +19,7 @@ sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 from config import Config
 from storage.repository import DiarioRepository
 from services.monitor_service import MonitorService
-from db.tenant_context import set_current_tenant
+from db.tenant_context import set_current_tenant, clear_current_tenant
 
 logger = logging.getLogger(__name__)
 
@@ -123,13 +123,14 @@ def agendar_verificacoes_task() -> None:
 
     for tenant in tenants:
         tid = str(tenant.id)
+        set_current_tenant(tid)
+
         try:
-            with repo.get_session(tenant_id=tid) as session:
-                expirados = repo.desativar_expirados()
-                if expirados > 0:
-                    logger.info(
-                        f"agendar_verificacoes_task: tenant={tid} {expirados} expirado(s) desativado(s)"
-                    )
+            expirados = repo.desativar_expirados()
+            if expirados > 0:
+                logger.info(
+                    f"agendar_verificacoes_task: tenant={tid} {expirados} expirado(s) desativado(s)"
+                )
         except Exception as e:
             logger.error(f"agendar_verificacoes_task: erro ao desativar expirados tenant={tid}: {e}")
 
@@ -143,6 +144,8 @@ def agendar_verificacoes_task() -> None:
         logger.info(f"agendar_verificacoes_task: tenant={tid} enfileirando {len(pessoas)} pessoa(s)")
         for pessoa in pessoas:
             verificar_pessoa_task.send(tid, pessoa.id)
+
+    clear_current_tenant()
 
 
 @dramatiq.actor(
