@@ -1,6 +1,8 @@
 .app {
   display: flex;
   min-height: 100vh;
+  overflow-x: hidden;
+  max-width: 100vw;
 }
 
 /* Sidebar */
@@ -164,6 +166,8 @@
   margin-left: 280px;
   padding: 32px;
   min-height: 100vh;
+  overflow-x: hidden;
+  min-width: 0;
 }
 
 /* Page header */
@@ -1249,5 +1253,35 @@
     flex-direction: column;
     align-items: flex-start;
     gap: 12px;
+  }
+
+  /* Prevent any child from causing horizontal overflow */
+  .search-section,
+  .results-section,
+  .alerts-section,
+  .card {
+    max-width: 100%;
+    overflow-x: auto;
+  }
+
+  /* Tables scroll horizontally */
+  table {
+    display: block;
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+  }
+
+  /* Processo info grid stacks on mobile */
+  .processo-info {
+    grid-template-columns: 1fr;
+  }
+
+  /* Drawer partes grid stacks */
+  .drawer-partes-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .drawer-info-grid {
+    grid-template-columns: 1fr;
   }
 }

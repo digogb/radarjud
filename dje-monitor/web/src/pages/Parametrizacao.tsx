@@ -36,7 +36,8 @@ function TabelaPadroes({
   }
 
   return (
-    <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+    <div style={{ overflowX: 'auto', WebkitOverflowScrolling: 'touch' }}>
+    <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 540 }}>
       <thead>
         <tr style={{ borderBottom: '1px solid var(--glass-border)' }}>
           {['Ordem', 'Label', 'Expressão', 'Ativo', ''].map(h => (
@@ -155,6 +156,7 @@ function TabelaPadroes({
         })}
       </tbody>
     </table>
+    </div>
   )
 }
 
@@ -334,6 +336,7 @@ export default function Parametrizacao() {
               display: 'flex',
               alignItems: 'stretch',
               borderBottom: '1px solid var(--glass-border)',
+              flexWrap: 'wrap',
             }}>
               {(['positivo', 'negativo'] as Tipo[]).map(tipo => {
                 const ativa = abaAtiva === tipo
