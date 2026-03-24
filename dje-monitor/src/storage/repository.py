@@ -20,8 +20,11 @@ logger = logging.getLogger(__name__)
 
 class _TenantSession:
     """
-    Context manager que seta o tenant no PostgreSQL via SET LOCAL antes de usar a sessão.
+    Context manager que seta o tenant no PostgreSQL via SET (session-level).
     Isso ativa as políticas de Row-Level Security.
+
+    Usa SET (não SET LOCAL) para que o valor persista entre transações
+    dentro da mesma sessão. O valor é limpo ao fechar a sessão via RESET.
     """
 
     def __init__(self, session_factory, tenant_id: str | None = None):
@@ -34,7 +37,7 @@ class _TenantSession:
         if self._tenant_id:
             try:
                 self._session.execute(
-                    text("SET LOCAL app.current_tenant = :tid"),
+                    text("SET app.current_tenant = :tid"),
                     {"tid": self._tenant_id},
                 )
             except Exception as e:
@@ -45,6 +48,11 @@ class _TenantSession:
         if self._session:
             if exc_type:
                 self._session.rollback()
+            if self._tenant_id:
+                try:
+                    self._session.execute(text("RESET app.current_tenant"))
+                except Exception:
+                    pass
             self._session.close()
         return False
 
@@ -90,17 +98,17 @@ class DiarioRepository:
                 if not existente.ativo:
                     existente.ativo = True
                     existente.atualizado_em = datetime.utcnow()
-                    session.commit()
-                    session.refresh(existente)
+                    session.flush()
                     logger.info(f"CPF {cpf} reativado para monitoramento")
                 session.expunge(existente)
+                session.commit()
                 return existente
 
             cpf_obj = CPFMonitorado(cpf=cpf, nome=nome, ativo=True)
             session.add(cpf_obj)
-            session.commit()
-            session.refresh(cpf_obj)
+            session.flush()
             session.expunge(cpf_obj)
+            session.commit()
             logger.info(f"CPF {cpf} adicionado para monitoramento")
             return cpf_obj
 
@@ -203,9 +211,9 @@ class DiarioRepository:
                 num_paginas=num_paginas,
             )
             session.add(diario)
-            session.commit()
-            session.refresh(diario)
+            session.flush()
             session.expunge(diario)
+            session.commit()
             logger.info(
                 f"Diário registrado: {tribunal} {data_publicacao} caderno {caderno}"
             )
@@ -261,9 +269,9 @@ class DiarioRepository:
                 contexto=contexto,
             )
             session.add(ocorrencia)
-            session.commit()
-            session.refresh(ocorrencia)
+            session.flush()
             session.expunge(ocorrencia)
+            session.commit()
             logger.info(
                 f"Ocorrência registrada: CPF {cpf_id} no diário {diario_id} "
                 f"(página {pagina})"
@@ -385,9 +393,9 @@ class DiarioRepository:
                     existente.ativo = True
                     existente.proximo_check = datetime.utcnow()
                 existente.atualizado_em = datetime.utcnow()
-                session.commit()
-                session.refresh(existente)
+                session.flush()
                 session.expunge(existente)
+                session.commit()
                 return existente
 
             from db.tenant_context import get_current_tenant_or_none
@@ -408,9 +416,9 @@ class DiarioRepository:
                 proximo_check=datetime.utcnow(),
             )
             session.add(pessoa)
-            session.commit()
-            session.refresh(pessoa)
+            session.flush()
             session.expunge(pessoa)
+            session.commit()
             logger.info(f"Pessoa adicionada para monitoramento: {nome}")
             return pessoa
 
@@ -658,9 +666,9 @@ class DiarioRepository:
                 destinatarios_json=json.dumps(dados.get("destinatarios", []), ensure_ascii=False),
             )
             session.add(pub)
-            session.commit()
-            session.refresh(pub)
+            session.flush()
             session.expunge(pub)
+            session.commit()
             return pub
 
     def listar_publicacoes_pessoa(
@@ -777,9 +785,9 @@ class DiarioRepository:
                 descricao=descricao,
             )
             session.add(alerta)
-            session.commit()
-            session.refresh(alerta)
+            session.flush()
             session.expunge(alerta)
+            session.commit()
             return alerta
 
     def marcar_alerta_notificado(self, alerta_id: int, canal: str) -> None:
@@ -877,12 +885,22 @@ class DiarioRepository:
                 .filter_by(ativo=True)
                 .scalar()
             ) or 0
-            total_publicacoes = session.query(func.count(PublicacaoMonitorada.id)).scalar() or 0
+            total_publicacoes = (
+                session.query(func.count(PublicacaoMonitorada.id))
+                .join(PessoaMonitorada, PublicacaoMonitorada.pessoa_id == PessoaMonitorada.id)
+                .filter(PessoaMonitorada.ativo == True)
+                .scalar()
+            ) or 0
             alertas_nao_lidos = (
-                session.query(func.count(Alerta.id)).filter_by(lido=False).scalar()
+                session.query(func.count(Alerta.id))
+                .join(PessoaMonitorada, Alerta.pessoa_id == PessoaMonitorada.id)
+                .filter(Alerta.lido == False, PessoaMonitorada.ativo == True)
+                .scalar()
             ) or 0
             ultima_sync = (
-                session.query(func.max(PessoaMonitorada.ultimo_check)).scalar()
+                session.query(func.max(PessoaMonitorada.ultimo_check))
+                .filter(PessoaMonitorada.ativo == True)
+                .scalar()
             )
             return {
                 "totalProcessos": total_publicacoes,
@@ -1173,9 +1191,10 @@ class DiarioRepository:
             max_ordem = session.query(func.max(PadraoOportunidade.ordem)).filter(PadraoOportunidade.tipo == tipo).scalar() or 0
             p = PadraoOportunidade(nome=nome, expressao=expressao, tipo=tipo, ativo=True, ordem=max_ordem + 1)
             session.add(p)
+            session.flush()
+            result = self._to_dict(p)
             session.commit()
-            session.refresh(p)
-            return self._to_dict(p)
+            return result
 
     def atualizar_padrao_oportunidade(self, padrao_id: int, **kwargs) -> dict | None:
         with self.get_session() as session:
@@ -1185,9 +1204,10 @@ class DiarioRepository:
             for campo in ("nome", "expressao", "tipo", "ativo", "ordem"):
                 if campo in kwargs:
                     setattr(p, campo, kwargs[campo])
+            session.flush()
+            result = self._to_dict(p)
             session.commit()
-            session.refresh(p)
-            return self._to_dict(p)
+            return result
 
     def reordenar_padroes_oportunidade(self, ids_ordenados: list[int]) -> list[dict]:
         """Recebe lista de IDs na nova ordem e atualiza o campo `ordem` de cada um."""
@@ -1261,9 +1281,8 @@ class DiarioRepository:
                     total_pubs=total_pubs,
                 )
                 session.add(classif)
-            session.commit()
-            session.refresh(classif)
-            return {
+            session.flush()
+            result = {
                 "id": classif.id,
                 "pessoa_id": classif.pessoa_id,
                 "numero_processo": classif.numero_processo,
@@ -1273,6 +1292,8 @@ class DiarioRepository:
                 "justificativa": classif.justificativa,
                 "total_pubs": classif.total_pubs,
             }
+            session.commit()
+            return result
 
     def obter_classificacao(self, pessoa_id: int, numero_processo: str) -> dict | None:
         """Retorna classificação de um processo, ou None se não existir."""

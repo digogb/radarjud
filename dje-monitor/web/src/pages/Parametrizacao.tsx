@@ -400,7 +400,7 @@ export default function Parametrizacao() {
                   )
                 })()}
                 <button
-                  className={abaAtiva === 'positivo' ? 'btn btn-primary' : 'btn btn-secondary'}
+                  className={abaAtiva === 'positivo' ? 'btn btn-primary' : 'btn btn-danger'}
                   style={{ fontSize: '0.85rem', padding: '7px 16px' }}
                   onClick={() => mostrarForm === abaAtiva ? setMostrarForm(null) : abrirForm(abaAtiva)}
                 >
