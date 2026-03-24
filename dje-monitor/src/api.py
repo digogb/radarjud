@@ -167,9 +167,17 @@ def _init_scheduler():
 @app.on_event("startup")
 def startup_event():
     _init_scheduler()
-    # Seed padrões de oportunidade (só insere se tabela vazia)
+    # Seed padrões de oportunidade por tenant (só insere se tabela vazia para o tenant)
     try:
-        repo.seed_padroes_oportunidade()
+        from db.tenant_context import set_current_tenant, clear_current_tenant
+        from storage.models import Tenant
+        with repo.get_session(tenant_id=None) as session:
+            tenants = session.query(Tenant).filter(Tenant.is_active == True).all()
+            tenant_ids = [str(t.id) for t in tenants]
+        for tid in tenant_ids:
+            set_current_tenant(tid)
+            repo.seed_padroes_oportunidade()
+        clear_current_tenant()
     except Exception as e:
         logger.warning(f"Não foi possível fazer seed de padrões: {e}")
     # Garantir collections do Qdrant
