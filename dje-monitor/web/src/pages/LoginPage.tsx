@@ -30,7 +30,7 @@ export default function LoginPage() {
     <div style={styles.container}>
       <div style={styles.card}>
         <div style={styles.logo}>
-          <Radar size={32} color="#3b82f6" />
+          <Radar size={32} color="var(--primary)" />
           <h1 style={styles.title}>RadarJud</h1>
         </div>
 
@@ -95,17 +95,17 @@ const styles: Record<string, React.CSSProperties> = {
     display: 'flex',
     alignItems: 'center',
     justifyContent: 'center',
-    background: 'linear-gradient(135deg, #0f172a 0%, #1e3a5f 100%)',
+    background: 'var(--gradient-bg)',
     padding: '1rem',
   },
   card: {
-    background: '#1e293b',
+    background: 'var(--surface)',
     borderRadius: '1rem',
     padding: '2.5rem',
     width: '100%',
     maxWidth: '400px',
-    boxShadow: '0 25px 50px rgba(0,0,0,0.4)',
-    border: '1px solid #334155',
+    boxShadow: 'var(--shadow-lg)',
+    border: '1px solid var(--glass-border)',
   },
   logo: {
     display: 'flex',
@@ -114,13 +114,13 @@ const styles: Record<string, React.CSSProperties> = {
     marginBottom: '0.5rem',
   },
   title: {
-    color: '#f1f5f9',
+    color: 'var(--text-primary)',
     fontSize: '1.5rem',
     fontWeight: 700,
     margin: 0,
   },
   subtitle: {
-    color: '#94a3b8',
+    color: 'var(--text-secondary)',
     marginBottom: '1.5rem',
     fontSize: '0.9rem',
   },
@@ -128,10 +128,10 @@ const styles: Record<string, React.CSSProperties> = {
     display: 'flex',
     alignItems: 'center',
     gap: '0.5rem',
-    background: '#450a0a',
-    border: '1px solid #7f1d1d',
+    background: 'var(--danger-muted)',
+    border: '1px solid var(--danger)',
     borderRadius: '0.5rem',
-    color: '#fca5a5',
+    color: 'var(--danger)',
     padding: '0.75rem 1rem',
     marginBottom: '1rem',
     fontSize: '0.875rem',
@@ -149,15 +149,15 @@ const styles: Record<string, React.CSSProperties> = {
   label: {
     display: 'flex',
     alignItems: 'center',
-    color: '#cbd5e1',
+    color: 'var(--text-secondary)',
     fontSize: '0.875rem',
     fontWeight: 500,
   },
   input: {
-    background: '#0f172a',
-    border: '1px solid #334155',
+    background: 'var(--background-secondary)',
+    border: '1px solid var(--border)',
     borderRadius: '0.5rem',
-    color: '#f1f5f9',
+    color: 'var(--text-primary)',
     padding: '0.625rem 0.875rem',
     fontSize: '0.9rem',
     outline: 'none',
@@ -165,7 +165,7 @@ const styles: Record<string, React.CSSProperties> = {
     boxSizing: 'border-box',
   },
   button: {
-    background: '#3b82f6',
+    background: 'var(--primary)',
     color: '#fff',
     border: 'none',
     borderRadius: '0.5rem',
@@ -177,7 +177,7 @@ const styles: Record<string, React.CSSProperties> = {
     transition: 'background 0.2s',
   },
   footer: {
-    color: '#475569',
+    color: 'var(--text-muted)',
     fontSize: '0.75rem',
     marginTop: '1.5rem',
     textAlign: 'center',

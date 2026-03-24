@@ -104,6 +104,27 @@
   border-top: 1px solid var(--border);
 }
 
+/* Theme toggle button */
+.theme-toggle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 8px 0;
+  background: none;
+  border: none;
+  color: var(--text-secondary);
+  font-size: 0.8rem;
+  font-family: inherit;
+  cursor: pointer;
+  transition: color var(--transition-fast);
+  margin-bottom: 8px;
+}
+
+.theme-toggle:hover {
+  color: var(--text-primary);
+}
+
 .sync-status {
   display: flex;
   align-items: center;
