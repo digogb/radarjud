@@ -7,6 +7,7 @@ A data de expiração é calculada como data_prazo + 5 anos.
 
 import logging
 import re
+import unicodedata
 from datetime import date, datetime
 from pathlib import Path
 from typing import Optional
@@ -20,13 +21,45 @@ logger = logging.getLogger(__name__)
 
 ANOS_MONITORAMENTO = 5
 
-# Headers esperados na planilha (busca por nome para ser robusto a reordenações)
-HEADER_DATA_PRAZO = "Data Prazo"
-HEADER_PARTE_ADVERSA = "Parte Adversa"
-HEADER_CPF_CNPJ = "CPF/CNPJ Adverso"
-HEADER_NUMERO_PROCESSO = "Número do Processo"
-HEADER_COMARCA = "Comarca"
-HEADER_UF = "UF"
+# Chaves internas para cada campo
+HEADER_DATA_PRAZO = "data_prazo"
+HEADER_PARTE_ADVERSA = "parte_adversa"
+HEADER_CPF_CNPJ = "cpf_cnpj"
+HEADER_NUMERO_PROCESSO = "numero_processo"
+HEADER_COMARCA = "comarca"
+HEADER_UF = "uf"
+
+# Aliases aceitos para cada campo (normalizados: lowercase, sem acentos, sem espaços extras)
+_ALIASES: dict[str, list[str]] = {
+    HEADER_PARTE_ADVERSA: [
+        "parte adversa", "nome", "nome adverso", "parte contraria",
+        "parte contrária", "adversario", "adversário", "nome da parte",
+    ],
+    HEADER_CPF_CNPJ: [
+        "cpf/cnpj adverso", "cpf/cnpj", "cpf", "cnpj", "cpf cnpj",
+        "cpf cnpj adverso", "documento", "doc",
+    ],
+    HEADER_NUMERO_PROCESSO: [
+        "numero do processo", "número do processo", "processo",
+        "nº processo", "n processo", "num processo", "numero processo",
+    ],
+    HEADER_DATA_PRAZO: [
+        "data prazo", "data do prazo", "prazo", "dt prazo", "vencimento",
+    ],
+    HEADER_COMARCA: [
+        "comarca", "foro", "vara",
+    ],
+    HEADER_UF: [
+        "uf", "estado", "sigla uf", "sigla estado",
+    ],
+}
+
+
+def _normalizar_header(texto: str) -> str:
+    """Normaliza texto de header: lowercase, sem acentos, sem espaços extras."""
+    texto = unicodedata.normalize("NFKD", texto)
+    texto = "".join(c for c in texto if not unicodedata.combining(c))
+    return " ".join(texto.lower().split())
 
 
 def extrair_nome(parte_adversa: str) -> Optional[str]:
@@ -93,12 +126,30 @@ def parse_data_prazo(raw) -> Optional[date]:
     return None
 
 
+def _build_alias_lookup() -> dict[str, str]:
+    """Constrói mapa invertido: alias normalizado → chave interna."""
+    lookup = {}
+    for key, aliases in _ALIASES.items():
+        for alias in aliases:
+            lookup[_normalizar_header(alias)] = key
+    return lookup
+
+
+_ALIAS_LOOKUP = _build_alias_lookup()
+
+
 def _mapear_colunas(ws) -> dict:
-    """Retorna mapeamento {nome_header: índice_coluna_0based} a partir da linha 1."""
+    """Retorna mapeamento {chave_interna: índice_coluna_0based} a partir da linha 1.
+
+    Aceita variações de nome (case-insensitive, sem acentos, aliases).
+    """
     headers = {}
     for cell in ws[1]:
         if cell.value:
-            headers[str(cell.value).strip()] = cell.column - 1
+            normalizado = _normalizar_header(str(cell.value))
+            chave = _ALIAS_LOOKUP.get(normalizado)
+            if chave and chave not in headers:
+                headers[chave] = cell.column - 1
     return headers
 
 
@@ -130,7 +181,11 @@ def importar_planilha(
     # Validar colunas obrigatórias
     for header in (HEADER_PARTE_ADVERSA,):
         if header not in col:
-            raise ValueError(f"Coluna obrigatória não encontrada na planilha: '{header}'")
+            aceitos = ", ".join(f"'{a}'" for a in _ALIASES[header])
+            raise ValueError(
+                f"Coluna obrigatória não encontrada na planilha. "
+                f"Nomes aceitos: {aceitos}"
+            )
 
     stats = {"total": 0, "importados": 0, "pulados": 0, "erros": 0}
 
