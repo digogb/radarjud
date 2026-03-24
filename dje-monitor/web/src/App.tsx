@@ -1,5 +1,6 @@
-import { Routes, Route, NavLink } from 'react-router-dom'
-import { LayoutDashboard, Search, Eye, Bell, Radar, TrendingUp, Settings, LogOut, User, KeyRound, Sun, Moon } from 'lucide-react'
+import { useState } from 'react'
+import { Routes, Route, NavLink, useLocation } from 'react-router-dom'
+import { LayoutDashboard, Search, Eye, Bell, Radar, TrendingUp, Settings, LogOut, User, KeyRound, Sun, Moon, Menu, X } from 'lucide-react'
 import Dashboard from './pages/Dashboard'
 import Busca from './pages/Busca'
 import Monitorados from './pages/Monitorados'
@@ -16,19 +17,47 @@ import './App.css'
 function AppLayout() {
   const { user, logout } = useAuth()
   const { theme, toggleTheme } = useTheme()
+  const [mobileMenuOpen, setMobileMenuOpen] = useState(false)
+  const location = useLocation()
 
   const navItems = [
-    { path: '/', icon: LayoutDashboard, label: 'Dashboard' },
-    { path: '/busca', icon: Search, label: 'Buscar Processo' },
-    { path: '/monitorados', icon: Eye, label: 'Pessoas Monitoradas' },
-    { path: '/oportunidades', icon: TrendingUp, label: 'Oportunidades' },
-    { path: '/parametrizacao', icon: Settings, label: 'Parametrização' },
+    { path: '/', icon: LayoutDashboard, label: 'Dashboard', shortLabel: 'Home' },
+    { path: '/busca', icon: Search, label: 'Buscar Processo', shortLabel: 'Busca' },
+    { path: '/monitorados', icon: Eye, label: 'Pessoas Monitoradas', shortLabel: 'Monitorados' },
+    { path: '/oportunidades', icon: TrendingUp, label: 'Oportunidades', shortLabel: 'Oportun.' },
+    { path: '/parametrizacao', icon: Settings, label: 'Parametrização', shortLabel: 'Config' },
   ]
+
+  const closeMobileMenu = () => setMobileMenuOpen(false)
 
   return (
     <div className="app">
-      {/* Sidebar */}
-      <aside className="sidebar">
+      {/* Mobile header */}
+      <header className="mobile-header">
+        <div className="logo">
+          <div className="logo-icon" style={{ width: 36, height: 36 }}>
+            <Radar size={18} />
+          </div>
+          <div className="logo-text">
+            <span className="logo-title" style={{ fontSize: '1rem' }}>Radar</span>
+            <span className="logo-subtitle" style={{ fontSize: '0.75rem' }}>Jud</span>
+          </div>
+        </div>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+          <button className="theme-toggle" onClick={toggleTheme} style={{ margin: 0, padding: 8 }} title={theme === 'dark' ? 'Modo claro' : 'Modo escuro'}>
+            {theme === 'dark' ? <Sun size={18} /> : <Moon size={18} />}
+          </button>
+          <button className="mobile-menu-btn" onClick={() => setMobileMenuOpen(!mobileMenuOpen)}>
+            {mobileMenuOpen ? <X size={22} /> : <Menu size={22} />}
+          </button>
+        </div>
+      </header>
+
+      {/* Mobile drawer overlay */}
+      {mobileMenuOpen && <div className="mobile-overlay" onClick={closeMobileMenu} />}
+
+      {/* Sidebar — also serves as mobile drawer */}
+      <aside className={`sidebar ${mobileMenuOpen ? 'sidebar-open' : ''}`}>
         <div className="sidebar-header">
           <div className="logo">
             <div className="logo-icon">
@@ -39,6 +68,9 @@ function AppLayout() {
               <span className="logo-subtitle">Jud</span>
             </div>
           </div>
+          <button className="mobile-close-btn" onClick={closeMobileMenu}>
+            <X size={20} />
+          </button>
         </div>
 
         <nav className="sidebar-nav">
@@ -48,6 +80,7 @@ function AppLayout() {
               to={item.path}
               end={item.path === '/'}
               className={({ isActive }) => `nav-item ${isActive ? 'active' : ''}`}
+              onClick={closeMobileMenu}
             >
               <item.icon size={20} />
               <span>{item.label}</span>
@@ -69,6 +102,7 @@ function AppLayout() {
               </div>
               <NavLink
                 to="/alterar-senha"
+                onClick={closeMobileMenu}
                 style={({ isActive }) => ({
                   display: 'flex', alignItems: 'center', gap: '0.4rem',
                   color: isActive ? 'var(--primary-hover)' : 'var(--text-muted)',
@@ -90,7 +124,7 @@ function AppLayout() {
             <span>Sistema ativo</span>
           </div>
           <button
-            onClick={logout}
+            onClick={() => { closeMobileMenu(); logout(); }}
             style={{
               display: 'flex', alignItems: 'center', gap: '0.5rem',
               background: 'none', border: 'none', color: 'var(--text-muted)',
@@ -122,6 +156,21 @@ function AppLayout() {
           } />
         </Routes>
       </main>
+
+      {/* Bottom navigation — mobile only */}
+      <nav className="bottom-nav">
+        {navItems.map((item) => (
+          <NavLink
+            key={item.path}
+            to={item.path}
+            end={item.path === '/'}
+            className={({ isActive }) => `bottom-nav-item ${isActive ? 'active' : ''}`}
+          >
+            <item.icon size={20} />
+            <span>{item.shortLabel}</span>
+          </NavLink>
+        ))}
+      </nav>
     </div>
   )
 }
