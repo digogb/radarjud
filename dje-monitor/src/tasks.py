@@ -507,10 +507,13 @@ def reindexar_tudo_task(tenant_id: str | None = None) -> None:
 
 @dramatiq.actor(queue_name="manutencao")
 def cleanup_expired_auth_tokens():
-    """Remove refresh tokens expirados do banco. Roda diariamente."""
+    """Remove refresh tokens expirados do banco. Roda diariamente.
+    Opera cross-tenant (manutenção global).
+    """
     try:
         from sqlalchemy import text
-        with repo.get_session() as session:
+        _repo = _make_repo()
+        with _repo.get_session() as session:
             result = session.execute(
                 text("DELETE FROM refresh_tokens WHERE expires_at < now()")
             )
@@ -522,10 +525,13 @@ def cleanup_expired_auth_tokens():
 
 @dramatiq.actor(queue_name="manutencao")
 def cleanup_old_audit_logs():
-    """Remove audit logs com mais de 90 dias. Roda diariamente."""
+    """Remove audit logs com mais de 90 dias. Roda diariamente.
+    Opera cross-tenant (manutenção global).
+    """
     try:
         from sqlalchemy import text
-        with repo.get_session() as session:
+        _repo = _make_repo()
+        with _repo.get_session() as session:
             result = session.execute(
                 text("DELETE FROM auth_audit_log WHERE created_at < now() - interval '90 days'")
             )

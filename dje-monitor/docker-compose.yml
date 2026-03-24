@@ -62,7 +62,7 @@ services:
     env_file:
       - .env
     environment:
-      - DJE_DATABASE_URL=postgresql://dje:dje_secret@postgres:5432/dje_monitor
+      - DJE_DATABASE_URL=${DJE_DATABASE_URL:-postgresql://dje:dje_secret@postgres:5432/dje_monitor}
       - DJE_REDIS_URL=redis://redis:6379/0
       - DJE_MONITOR_HABILITADO=true
       - DJE_MONITOR_INTERVAL_MINUTES=30
@@ -91,7 +91,7 @@ services:
     env_file:
       - .env
     environment:
-      - DJE_DATABASE_URL=postgresql://dje:dje_secret@postgres:5432/dje_monitor
+      - DJE_DATABASE_URL=${DJE_DATABASE_URL:-postgresql://dje:dje_secret@postgres:5432/dje_monitor}
       - DJE_REDIS_URL=redis://redis:6379/0
       - DJE_QDRANT_URL=http://qdrant:6333
     restart: unless-stopped
@@ -133,7 +133,7 @@ services:
     env_file:
       - .env
     environment:
-      - DJE_DATABASE_URL=postgresql://dje:dje_secret@postgres:5432/dje_monitor
+      - DJE_DATABASE_URL=${DJE_DATABASE_URL:-postgresql://dje:dje_secret@postgres:5432/dje_monitor}
       - DJE_REDIS_URL=redis://redis:6379/0
       - DJE_QDRANT_URL=http://qdrant:6333
     restart: unless-stopped

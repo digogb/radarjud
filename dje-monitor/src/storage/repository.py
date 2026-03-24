@@ -390,7 +390,11 @@ class DiarioRepository:
                 session.expunge(existente)
                 return existente
 
+            from db.tenant_context import get_current_tenant_or_none
+            _tenant_id = get_current_tenant_or_none()
+
             pessoa = PessoaMonitorada(
+                tenant_id=_tenant_id,
                 nome=nome,
                 cpf=cpf,
                 tribunal_filtro=tribunal_filtro,
@@ -761,7 +765,11 @@ class DiarioRepository:
     ) -> Alerta:
         """Registra um alerta de nova publicação."""
         with self.get_session() as session:
+            from db.tenant_context import get_current_tenant_or_none
+            _tenant_id = get_current_tenant_or_none()
+
             alerta = Alerta(
+                tenant_id=_tenant_id,
                 pessoa_id=pessoa_id,
                 publicacao_id=publicacao_id,
                 tipo=tipo,
