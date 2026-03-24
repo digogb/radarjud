@@ -26,8 +26,12 @@ RUN python -c "from sentence_transformers import SentenceTransformer; \
     echo 'Aviso: pré-download do modelo falhou, será baixado no primeiro uso'
 
 # --- Camadas que mudam com o código ---
-COPY requirements.txt .
+COPY dje-monitor/requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
+
+# Instalar pacote dje-search-client (local)
+COPY dje-search-client/ /tmp/dje-search-client/
+RUN pip install --no-cache-dir /tmp/dje-search-client
 
 # Criar diretórios (src será montado via volume em runtime)
 RUN mkdir -p /app/data/pdfs /app/src

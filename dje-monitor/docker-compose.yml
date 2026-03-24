@@ -46,7 +46,9 @@ services:
     restart: unless-stopped
 
   api:
-    build: .
+    build:
+      context: ..
+      dockerfile: dje-monitor/Dockerfile
     image: dje-monitor-backend:latest
     container_name: dje-monitor-api
     entrypoint: []
@@ -76,7 +78,9 @@ services:
         condition: service_started
 
   worker:
-    build: .
+    build:
+      context: ..
+      dockerfile: dje-monitor/Dockerfile
     image: dje-monitor-backend:latest
     container_name: dje-monitor-worker
     entrypoint: []
@@ -117,7 +121,9 @@ services:
 
   # Scheduler: dispara sync diária para todos os tenants ativos
   scheduler:
-    build: .
+    build:
+      context: ..
+      dockerfile: dje-monitor/Dockerfile
     image: dje-monitor-backend:latest
     container_name: dje-monitor-scheduler
     entrypoint: []

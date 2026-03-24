@@ -629,8 +629,16 @@ class DiarioRepository:
         Registra uma nova publicação encontrada para uma pessoa monitorada.
         Se gerar_alerta=False (first check), não cria alerta.
         """
+        tenant_id = None
+        try:
+            from db.tenant_context import get_current_tenant_or_none
+            tenant_id = get_current_tenant_or_none()
+        except Exception:
+            pass
+
         with self.get_session() as session:
             pub = PublicacaoMonitorada(
+                tenant_id=tenant_id,
                 pessoa_id=pessoa_id,
                 hash_unico=hash_unico,
                 comunicacao_id=dados.get("id") or dados.get("comunicacao_id"),
