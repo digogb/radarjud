@@ -9,7 +9,6 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-dje_secret}
     volumes:
       - postgres_data:/var/lib/postgresql/data
-    # SEM ports - api/worker acessam via postgres:5432 na rede Docker
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U dje -d dje_monitor"]
       interval: 5s
@@ -20,7 +19,6 @@ services:
     image: redis:7-alpine
     container_name: dje-monitor-redis
     restart: unless-stopped
-    # SEM ports - acessível via redis:6379 na rede Docker
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 5s
@@ -30,7 +28,6 @@ services:
   qdrant:
     image: qdrant/qdrant:v1.9.7
     container_name: dje-monitor-qdrant
-    # SEM ports - acessível via qdrant:6333/6334 na rede Docker
     volumes:
       - qdrant_data:/qdrant/storage
     environment:
@@ -50,7 +47,7 @@ services:
     entrypoint: []
     command: uvicorn api:app --host 0.0.0.0 --port 8000
     ports:
-      - "127.0.0.1:8000:8000"  # Só local - nginx faz proxy
+      - "127.0.0.1:8000:8000"
     volumes:
       - ./data:/app/data
       - ./src:/app/src
@@ -61,27 +58,4 @@ services:
       - DJE_DATABASE_URL=${DJE_DATABASE_URL:-postgresql://dje:dje_secret@postgres:5432/dje_monitor}
       - DJE_REDIS_URL=redis://redis:6379/0
       - DJE_MONITOR_HABILITADO=true
-      - DJE_MONITOR_INTERVAL_MINUTES=30
-      - DJE_MONITOR_MAX_PAGINAS=10
-      - DJE_QDRANT_URL=http://qdrant:6333
-    restart: unless-stopped
-    depends_on:
-      postgres:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
-      qdrant:
-        condition: service_started
-
-  worker:
-    # ... (sem alterações, não tem ports)
-
-  web:
-    # ... (sem alterações, 80 OK se for dev. Se produção usa o segundo compose, remove este)
-
-  scheduler:
-    # ... (sem alterações, não tem ports)
-
-volumes:
-  postgres_data:
-  qdrant_data:
+      -
