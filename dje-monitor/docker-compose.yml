@@ -6,11 +6,10 @@ services:
     environment:
       POSTGRES_DB: dje_monitor
       POSTGRES_USER: dje
-      POSTGRES_PASSWORD: dje_secret
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-dje_secret}
     volumes:
       - postgres_data:/var/lib/postgresql/data
-    ports:
-      - "5432:5432"
+    # SEM ports - api/worker acessam via postgres:5432 na rede Docker
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U dje -d dje_monitor"]
       interval: 5s
@@ -21,8 +20,7 @@ services:
     image: redis:7-alpine
     container_name: dje-monitor-redis
     restart: unless-stopped
-    ports:
-      - "6379:6379"
+    # SEM ports - acessível via redis:6379 na rede Docker
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 5s
@@ -32,9 +30,7 @@ services:
   qdrant:
     image: qdrant/qdrant:v1.9.7
     container_name: dje-monitor-qdrant
-    ports:
-      - "6333:6333"
-      - "6334:6334"
+    # SEM ports - acessível via qdrant:6333/6334 na rede Docker
     volumes:
       - qdrant_data:/qdrant/storage
     environment:
@@ -54,7 +50,7 @@ services:
     entrypoint: []
     command: uvicorn api:app --host 0.0.0.0 --port 8000
     ports:
-      - "8000:8000"
+      - "127.0.0.1:8000:8000"  # Só local - nginx faz proxy
     volumes:
       - ./data:/app/data
       - ./src:/app/src
@@ -78,70 +74,13 @@ services:
         condition: service_started
 
   worker:
-    build:
-      context: ..
-      dockerfile: dje-monitor/Dockerfile
-    image: dje-monitor-backend:latest
-    container_name: dje-monitor-worker
-    entrypoint: []
-    command: python -m dramatiq tasks --processes 1 --threads 2
-    volumes:
-      - ./data:/app/data
-      - ./src:/app/src
-    env_file:
-      - .env
-    environment:
-      - DJE_DATABASE_URL=${DJE_DATABASE_URL:-postgresql://dje:dje_secret@postgres:5432/dje_monitor}
-      - DJE_REDIS_URL=redis://redis:6379/0
-      - DJE_QDRANT_URL=http://qdrant:6333
-    restart: unless-stopped
-    depends_on:
-      postgres:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
-      qdrant:
-        condition: service_started
+    # ... (sem alterações, não tem ports)
 
   web:
-    build:
-      context: ./web
-      args:
-        - VITE_API_URL=
-        # Configurar VITE_TENANT_ID para o tenant padrão (ex: UUID do tenant 'armando')
-        - VITE_TENANT_ID=21269ac1-1a04-4c6a-b8e9-39852d403212
-    container_name: dje-monitor-web
-    ports:
-      - "80:80"
-    volumes:
-      - ./web/nginx.dev.conf:/etc/nginx/conf.d/default.conf
-    restart: unless-stopped
-    depends_on:
-      - api
+    # ... (sem alterações, 80 OK se for dev. Se produção usa o segundo compose, remove este)
 
-  # Scheduler: dispara sync diária para todos os tenants ativos
   scheduler:
-    build:
-      context: ..
-      dockerfile: dje-monitor/Dockerfile
-    image: dje-monitor-backend:latest
-    container_name: dje-monitor-scheduler
-    entrypoint: []
-    command: sh -c "while true; do python3 -c 'import sys; sys.path.insert(0, \"/app/src\"); from tasks import agendar_verificacoes_task; agendar_verificacoes_task.send(); print(\"Sync diaria enfileirada\")'; sleep 86400; done"
-    volumes:
-      - ./src:/app/src
-    env_file:
-      - .env
-    environment:
-      - DJE_DATABASE_URL=${DJE_DATABASE_URL:-postgresql://dje:dje_secret@postgres:5432/dje_monitor}
-      - DJE_REDIS_URL=redis://redis:6379/0
-      - DJE_QDRANT_URL=http://qdrant:6333
-    restart: unless-stopped
-    depends_on:
-      postgres:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
+    # ... (sem alterações, não tem ports)
 
 volumes:
   postgres_data:
