@@ -6,7 +6,7 @@ import logging
 import secrets
 import string
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 
 from fastapi import HTTPException
 
@@ -125,7 +125,7 @@ class UserService:
 
             old_role = user.role
             user.role = new_role
-            user.updated_at = datetime.utcnow()
+            user.updated_at = datetime.now(timezone.utc)
 
             log = AuthAuditLog(
                 tenant_id=tenant_id,
@@ -148,7 +148,7 @@ class UserService:
                 raise HTTPException(status_code=404, detail="Usuário não encontrado.")
 
             user.is_active = False
-            user.updated_at = datetime.utcnow()
+            user.updated_at = datetime.now(timezone.utc)
 
             # Revogar todos os refresh tokens
             tokens = session.query(RefreshToken).filter(
@@ -181,7 +181,7 @@ class UserService:
 
             user.password_hash = hash_password(temp_password)
             user.must_change_password = True
-            user.updated_at = datetime.utcnow()
+            user.updated_at = datetime.now(timezone.utc)
 
             # Revogar todos os refresh tokens
             tokens = session.query(RefreshToken).filter(

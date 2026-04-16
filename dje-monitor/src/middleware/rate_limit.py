@@ -42,5 +42,8 @@ class LoginRateLimiter:
         except HTTPException:
             raise
         except Exception as e:
-            logger.warning(f"Rate limiter indisponível: {e}")
-            # Não bloquear se Redis estiver down
+            logger.error(f"Rate limiter indisponível — bloqueando login por segurança: {e}")
+            raise HTTPException(
+                status_code=503,
+                detail="Serviço temporariamente indisponível. Tente novamente em alguns minutos.",
+            )

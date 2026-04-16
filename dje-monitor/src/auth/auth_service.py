@@ -93,7 +93,7 @@ class AuthService:
             # Reset tentativas + registrar login
             user.failed_login_attempts = 0
             user.locked_until = None
-            user.last_login_at = datetime.utcnow()
+            user.last_login_at = datetime.now(timezone.utc)
             self._log_audit(session, user.tenant_id, user.id, "login", ip, user_agent)
             session.commit()
 
@@ -218,7 +218,7 @@ class AuthService:
             if not verify_password(current_password, user.password_hash):
                 raise AuthenticationError("Senha atual incorreta.")
             user.password_hash = hash_password(new_password)
-            user.password_changed_at = datetime.utcnow()
+            user.password_changed_at = datetime.now(timezone.utc)
             user.must_change_password = False
             # Revogar todos os refresh tokens (forçar re-login)
             self._revoke_all_user_tokens_in_session(session, user_id)
@@ -228,7 +228,7 @@ class AuthService:
         from datetime import timedelta
         user.failed_login_attempts = (user.failed_login_attempts or 0) + 1
         if user.failed_login_attempts >= self.max_login_attempts:
-            user.locked_until = datetime.utcnow() + timedelta(minutes=self.lockout_minutes)
+            user.locked_until = datetime.now(timezone.utc) + timedelta(minutes=self.lockout_minutes)
         self._log_audit(session, user.tenant_id, user.id, "login_failed", ip, user_agent)
         session.commit()
 

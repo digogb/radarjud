@@ -1,4 +1,4 @@
-from fastapi import FastAPI, Query, HTTPException, BackgroundTasks, UploadFile, File, Request
+from fastapi import Depends, FastAPI, Query, HTTPException, BackgroundTasks, UploadFile, File, Request
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import List, Optional, Any
@@ -16,7 +16,8 @@ from config import Config
 from middleware.tenant import TenantMiddleware
 from auth.token_service import TokenService
 from auth.auth_service import AuthService
-from auth.dependencies import set_token_service
+from auth.dependencies import set_token_service, get_current_user, CurrentUser, require_permission
+from auth.permissions import Permission
 
 # Configuração de Logs básica
 logging.basicConfig(
@@ -40,8 +41,8 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=_cors_origins,
     allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+    allow_headers=["Authorization", "Content-Type", "X-Tenant-ID", "X-Admin-Key"],
 )
 
 # --- Inicialização global ---
@@ -214,6 +215,7 @@ def health_check():
 async def search_name(
     nome: str = Query(..., min_length=3, description="Nome da parte a ser buscada"),
     tribunal: Optional[str] = Query(None, description="Filtro opcional de tribunal"),
+    user: CurrentUser = Depends(get_current_user),
 ):
     """Busca comunicações no DJEN pelo nome da parte."""
     logger.info(f"Recebida busca por nome: {nome}")
@@ -258,7 +260,7 @@ async def search_name(
         return {"count": len(resultados), "results": resultados}
     except Exception as e:
         logger.error(f"Erro na busca API: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Erro interno na busca. Tente novamente.")
 
 
 # ============================================================
@@ -281,7 +283,7 @@ class PessoaMonitoradaUpdate(BaseModel):
 
 
 @app.post("/api/v1/pessoas-monitoradas", status_code=201)
-def criar_pessoa(request: Request, body: PessoaMonitoradaCreate):
+def criar_pessoa(request: Request, body: PessoaMonitoradaCreate, user: CurrentUser = Depends(require_permission(Permission.PROCESSOS_CREATE))):
     """
     Cria uma pessoa para monitoramento.
     Enfileira first_check no worker Dramatiq (salva publicações existentes sem gerar alertas).
@@ -299,7 +301,7 @@ def criar_pessoa(request: Request, body: PessoaMonitoradaCreate):
 
 
 @app.get("/api/v1/pessoas-monitoradas")
-def listar_pessoas(ativo: Optional[bool] = Query(None)):
+def listar_pessoas(ativo: Optional[bool] = Query(None), user: CurrentUser = Depends(get_current_user)):
     """Lista pessoas monitoradas."""
     apenas_ativas = ativo if ativo is not None else True
     pessoas = repo.listar_pessoas(apenas_ativas=apenas_ativas)
@@ -307,7 +309,7 @@ def listar_pessoas(ativo: Optional[bool] = Query(None)):
 
 
 @app.get("/api/v1/pessoas-monitoradas/{pessoa_id}")
-def obter_pessoa(pessoa_id: int):
+def obter_pessoa(pessoa_id: int, user: CurrentUser = Depends(get_current_user)):
     """Retorna detalhes de uma pessoa monitorada."""
     pessoa = repo.obter_pessoa(pessoa_id)
     if not pessoa:
@@ -316,7 +318,7 @@ def obter_pessoa(pessoa_id: int):
 
 
 @app.put("/api/v1/pessoas-monitoradas/{pessoa_id}")
-def atualizar_pessoa(pessoa_id: int, body: PessoaMonitoradaUpdate):
+def atualizar_pessoa(pessoa_id: int, body: PessoaMonitoradaUpdate, user: CurrentUser = Depends(require_permission(Permission.PROCESSOS_EDIT))):
     """Atualiza dados de uma pessoa monitorada."""
     updates = {k: v for k, v in body.model_dump().items() if v is not None}
     pessoa = repo.atualizar_pessoa(pessoa_id, **updates)
@@ -326,7 +328,7 @@ def atualizar_pessoa(pessoa_id: int, body: PessoaMonitoradaUpdate):
 
 
 @app.delete("/api/v1/pessoas-monitoradas/{pessoa_id}", status_code=204)
-def desativar_pessoa(pessoa_id: int):
+def desativar_pessoa(pessoa_id: int, user: CurrentUser = Depends(require_permission(Permission.PROCESSOS_DELETE))):
     """Desativa monitoramento de uma pessoa (soft delete)."""
     ok = repo.desativar_pessoa(pessoa_id)
     if not ok:
@@ -334,7 +336,7 @@ def desativar_pessoa(pessoa_id: int):
 
 
 @app.get("/api/v1/pessoas-monitoradas/{pessoa_id}/publicacoes")
-def listar_publicacoes_pessoa(pessoa_id: int, limit: int = Query(100, le=500)):
+def listar_publicacoes_pessoa(pessoa_id: int, limit: int = Query(100, le=500), user: CurrentUser = Depends(get_current_user)):
     """Lista publicações encontradas para uma pessoa monitorada, agrupadas por processo.
 
     O processo de referência (numero_processo da pessoa) é excluído da listagem —
@@ -350,7 +352,7 @@ def listar_publicacoes_pessoa(pessoa_id: int, limit: int = Query(100, le=500)):
 
 
 @app.get("/api/v1/pessoas-monitoradas/{pessoa_id}/alertas")
-def listar_alertas_pessoa(pessoa_id: int, lido: Optional[bool] = Query(None), limit: int = 50):
+def listar_alertas_pessoa(pessoa_id: int, lido: Optional[bool] = Query(None), limit: int = 50, user: CurrentUser = Depends(get_current_user)):
     """Lista alertas de uma pessoa monitorada."""
     pessoa = repo.obter_pessoa(pessoa_id)
     if not pessoa:
@@ -373,6 +375,7 @@ def listar_alertas(
     lido: Optional[bool] = Query(None),
     limit: int = Query(50, le=200),
     offset: int = 0,
+    user: CurrentUser = Depends(get_current_user),
 ):
     """Lista alertas com filtros opcionais."""
     return repo.listar_alertas(pessoa_id=pessoa_id, lido=lido, limit=limit, offset=offset)
@@ -382,13 +385,14 @@ def listar_alertas(
 def contar_alertas_nao_lidos(
     pessoa_id: Optional[int] = Query(None),
     tipo: Optional[str] = Query(None, description="Filtrar por tipo de alerta (ex: OPORTUNIDADE_CREDITO)"),
+    user: CurrentUser = Depends(get_current_user),
 ):
     """Retorna contagem de alertas não lidos para badge."""
     return {"count": repo.contar_alertas_nao_lidos(pessoa_id=pessoa_id, tipo=tipo)}
 
 
 @app.post("/api/v1/alertas/marcar-lidos")
-def marcar_alertas_lidos(body: MarcarLidosBody):
+def marcar_alertas_lidos(body: MarcarLidosBody, user: CurrentUser = Depends(get_current_user)):
     """Marca alertas como lidos."""
     count = repo.marcar_alertas_lidos(ids=body.ids, todos=body.todos)
     return {"marcados": count}
@@ -399,24 +403,24 @@ def marcar_alertas_lidos(body: MarcarLidosBody):
 # ============================================================
 
 @app.get("/api/dashboard/resumo")
-def dashboard_resumo():
+def dashboard_resumo(user: CurrentUser = Depends(get_current_user)):
     return repo.dashboard_stats()
 
 
 @app.get("/api/dashboard/alteracoes")
-def dashboard_alteracoes(limit: int = 10):
+def dashboard_alteracoes(limit: int = 10, user: CurrentUser = Depends(get_current_user)):
     return repo.alertas_recentes_dashboard(limit=limit)
 
 
 @app.post("/api/dashboard/alteracoes/marcar-vistas")
-def dashboard_marcar_vistas(body: dict = {}):
+def dashboard_marcar_vistas(body: dict = {}, user: CurrentUser = Depends(get_current_user)):
     ids = body.get("ids")
     count = repo.marcar_alertas_lidos(ids=ids, todos=(ids is None))
     return {"marcados": count}
 
 
 @app.get("/api/dashboard/estatisticas/tribunais")
-def dashboard_stats_tribunais():
+def dashboard_stats_tribunais(user: CurrentUser = Depends(get_current_user)):
     return []
 
 
@@ -426,14 +430,14 @@ def dashboard_stats_tribunais():
 
 
 @app.post("/api/sync/forcar")
-def forcar_sync():
+def forcar_sync(user: CurrentUser = Depends(require_permission(Permission.TENANT_SETTINGS))):
     """Força verificação imediata de todas as pessoas enfileirando via Dramatiq."""
     agendar_verificacoes_task.send()
     return {"status": "iniciado", "mensagem": "Verificação enfileirada no worker"}
 
 
 @app.get("/api/sync/status")
-def sync_status():
+def sync_status(user: CurrentUser = Depends(get_current_user)):
     """Retorna status do scheduler e informações das filas Redis."""
     scheduler_info = {
         "ativo": False,
@@ -459,7 +463,7 @@ def sync_status():
             filas[fila] = int(count)
     except Exception as e:
         logger.warning(f"Não foi possível consultar filas Redis: {e}")
-        filas = {"erro": str(e)}
+        filas = {"erro": "Redis indisponível"}
 
     return {**scheduler_info, "filas": filas}
 
@@ -474,6 +478,7 @@ async def importar_planilha_endpoint(
     dry_run: bool = Query(False, description="Simula sem gravar no banco"),
     desativar_expirados: bool = Query(False, description="Desativa monitoramentos expirados após importar"),
     intervalo_horas: int = Query(24, description="Frequência de verificação em horas (6, 12, 24 ou 48)"),
+    user: CurrentUser = Depends(require_permission(Permission.PROCESSOS_CREATE)),
 ):
     """Faz upload de pessoas.xlsx e importa partes adversas como pessoas monitoradas.
     Retorna os stats da importação ao concluir (síncrono).
@@ -511,7 +516,7 @@ async def importar_planilha_endpoint(
     except Exception as e:
         logger.error(f"Erro fatal na importação de planilha: {e}")
         logger.error(traceback.format_exc())
-        raise HTTPException(status_code=500, detail=f"Erro interno ao processar planilha: {str(e)}")
+        raise HTTPException(status_code=500, detail="Erro interno ao processar planilha. Verifique o formato do arquivo.")
         
     finally:
         try:
@@ -535,6 +540,7 @@ def semantic_search(
     limit: int = Query(20, ge=1, le=100),
     score_threshold: float = Query(0.35, ge=0.0, le=1.0),
     tipo: str = Query("publicacoes", regex="^(publicacoes|processos)$"),
+    user: CurrentUser = Depends(get_current_user),
 ):
     """
     Busca semântica em publicações ou processos.
@@ -656,7 +662,7 @@ def semantic_search(
         }
     except Exception as e:
         logger.error(f"Erro na busca semântica: {e}", exc_info=True)
-        raise HTTPException(status_code=503, detail=f"Serviço de busca semântica indisponível: {str(e)}")
+        raise HTTPException(status_code=503, detail="Serviço de busca semântica indisponível. Tente novamente mais tarde.")
 
 
 # ============================================================
@@ -670,6 +676,7 @@ def buscar_oportunidades(
     dias: int = Query(30, ge=1, le=365, description="Janela de dias para varrer publicações"),
     limit: int = Query(50, ge=1, le=200, description="Máximo de resultados"),
     semantico: bool = Query(True, description="Aplicar filtro semântico para reduzir falsos positivos"),
+    user: CurrentUser = Depends(get_current_user),
 ):
     """Lista publicações recentes com sinais de recebimento de valores (alvará, levantamento, precatório).
 
@@ -714,7 +721,7 @@ def buscar_oportunidades(
 
 
 @app.get("/api/v1/padroes-oportunidade")
-def listar_padroes():
+def listar_padroes(user: CurrentUser = Depends(get_current_user)):
     """Lista padrões de detecção de oportunidades configurados."""
     return repo.listar_padroes_oportunidade()
 
@@ -738,19 +745,19 @@ class PadraoReordenar(BaseModel):
 
 
 @app.post("/api/v1/padroes-oportunidade", status_code=201)
-def criar_padrao(body: PadraoCreate):
+def criar_padrao(body: PadraoCreate, user: CurrentUser = Depends(require_permission(Permission.PROCESSOS_EDIT))):
     """Cria um novo padrão de detecção."""
     return repo.criar_padrao_oportunidade(nome=body.nome, expressao=body.expressao, tipo=body.tipo)
 
 
 @app.post("/api/v1/padroes-oportunidade/reordenar")
-def reordenar_padroes(body: PadraoReordenar):
+def reordenar_padroes(body: PadraoReordenar, user: CurrentUser = Depends(require_permission(Permission.PROCESSOS_EDIT))):
     """Recebe lista de IDs na nova ordem e salva a prioridade."""
     return repo.reordenar_padroes_oportunidade(body.ids)
 
 
 @app.put("/api/v1/padroes-oportunidade/{padrao_id}")
-def atualizar_padrao(padrao_id: int, body: PadraoUpdate):
+def atualizar_padrao(padrao_id: int, body: PadraoUpdate, user: CurrentUser = Depends(require_permission(Permission.PROCESSOS_EDIT))):
     """Atualiza nome, expressão ou status ativo de um padrão."""
     updates = {k: v for k, v in body.model_dump().items() if v is not None}
     padrao = repo.atualizar_padrao_oportunidade(padrao_id, **updates)
@@ -760,7 +767,7 @@ def atualizar_padrao(padrao_id: int, body: PadraoUpdate):
 
 
 @app.delete("/api/v1/padroes-oportunidade/{padrao_id}", status_code=204)
-def deletar_padrao(padrao_id: int):
+def deletar_padrao(padrao_id: int, user: CurrentUser = Depends(require_permission(Permission.PROCESSOS_DELETE))):
     """Remove um padrão de detecção."""
     ok = repo.deletar_padrao_oportunidade(padrao_id)
     if not ok:
@@ -773,21 +780,21 @@ class DescartarOportunidadeRequest(BaseModel):
 
 
 @app.post("/api/v1/oportunidades/descartar", status_code=201)
-def descartar_oportunidade(body: DescartarOportunidadeRequest):
+def descartar_oportunidade(body: DescartarOportunidadeRequest, user: CurrentUser = Depends(get_current_user)):
     """Marca um processo como descartado pelo usuário."""
     repo.descartar_oportunidade(body.pessoa_id, body.numero_processo)
     return {"status": "descartado"}
 
 
 @app.delete("/api/v1/oportunidades/descartar", status_code=200)
-def restaurar_oportunidade(body: DescartarOportunidadeRequest):
+def restaurar_oportunidade(body: DescartarOportunidadeRequest, user: CurrentUser = Depends(get_current_user)):
     """Remove o descarte de um processo (restaura para a aba original)."""
     repo.restaurar_oportunidade(body.pessoa_id, body.numero_processo)
     return {"status": "restaurado"}
 
 
 @app.post("/api/v1/oportunidades/varrer")
-def varrer_oportunidades(request: Request):
+def varrer_oportunidades(request: Request, user: CurrentUser = Depends(require_permission(Permission.TENANT_SETTINGS))):
     """Dispara varredura imediata de oportunidades de crédito."""
     from tasks import varrer_oportunidades_task
     _tid = getattr(request.state, "tenant_id", None)
@@ -801,7 +808,7 @@ class ClassificarProcessoRequest(BaseModel):
 
 
 @app.post("/api/v1/oportunidades/classificar")
-def classificar_processo_endpoint(request: Request, body: ClassificarProcessoRequest):
+def classificar_processo_endpoint(request: Request, body: ClassificarProcessoRequest, user: CurrentUser = Depends(get_current_user)):
     """Dispara classificação IA de credor/devedor para um processo específico."""
     if not config.openai_habilitado:
         raise HTTPException(status_code=503, detail="OpenAI não configurada.")
@@ -827,7 +834,7 @@ def _resumo_cache_key(pessoa_id: int, numero_processo: str, total_pubs: int) -> 
 
 
 @app.post("/api/v1/oportunidades/resumo")
-def resumir_processo(body: ResumoProcessoRequest):
+def resumir_processo(body: ResumoProcessoRequest, user: CurrentUser = Depends(get_current_user)):
     """Gera resumo de um processo via OpenAI a partir das publicações monitoradas.
 
     O resultado é cacheado no Redis por 7 dias (ou enquanto o número de publicações
@@ -873,7 +880,8 @@ def resumir_processo(body: ResumoProcessoRequest):
             numero_processo=body.numero_processo,
         )
     except RuntimeError as e:
-        raise HTTPException(status_code=502, detail=str(e))
+        logger.error(f"Erro ao gerar resumo: {e}")
+        raise HTTPException(status_code=502, detail="Erro ao gerar resumo do processo. Tente novamente.")
 
     try:
         if r:
@@ -886,7 +894,7 @@ def resumir_processo(body: ResumoProcessoRequest):
 
 
 @app.post("/api/v1/search/reindex")
-def trigger_reindex(request: Request):
+def trigger_reindex(request: Request, user: CurrentUser = Depends(require_permission(Permission.TENANT_SETTINGS))):
     """Dispara reindexação completa das publicações no Qdrant."""
     from tasks import reindexar_tudo_task
     _tid = getattr(request.state, "tenant_id", None)
@@ -895,7 +903,7 @@ def trigger_reindex(request: Request):
 
 
 @app.get("/api/v1/search/semantic/status")
-def semantic_status():
+def semantic_status(user: CurrentUser = Depends(get_current_user)):
     """Retorna status do Qdrant e contadores das collections."""
     try:
         from services.embedding_service import get_client
@@ -910,4 +918,5 @@ def semantic_status():
             }
         return {"status": "ok", "collections": collections}
     except Exception as e:
-        return {"status": "error", "message": str(e)}
+        logger.error(f"Erro ao verificar status semântico: {e}")
+        return {"status": "error", "message": "Serviço indisponível"}

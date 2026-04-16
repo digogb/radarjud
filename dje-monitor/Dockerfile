@@ -7,8 +7,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libpq-dev \
     build-essential \
     gcc \
-    && rm -rf /var/lib/apt/lists/* \
-    && sed -i 's/SECLEVEL=2/SECLEVEL=1/g' /etc/ssl/openssl.cnf
+    && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 
@@ -22,7 +21,7 @@ RUN pip install --no-cache-dir sentence-transformers einops
 # Pré-download do modelo Nomic (evita download no primeiro request em produção)
 # Esta camada só invalida se as linhas acima mudarem, não quando requirements.txt muda
 RUN python -c "from sentence_transformers import SentenceTransformer; \
-    SentenceTransformer('nomic-ai/nomic-embed-text-v1.5', trust_remote_code=True)" || \
+    SentenceTransformer('nomic-ai/nomic-embed-text-v1.5', trust_remote_code=False)" || \
     echo 'Aviso: pré-download do modelo falhou, será baixado no primeiro uso'
 
 # --- Camadas que mudam com o código ---

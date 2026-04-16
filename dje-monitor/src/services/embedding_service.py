@@ -103,7 +103,7 @@ def get_model():
         from sentence_transformers import SentenceTransformer
         cfg = _get_config()
         logger.info(f"Carregando modelo local {cfg.embedding_model} (alta memória)...")
-        _model = SentenceTransformer(cfg.embedding_model, trust_remote_code=True)
+        _model = SentenceTransformer(cfg.embedding_model, trust_remote_code=False)
         logger.info("Modelo local carregado.")
     return _model
 
@@ -114,7 +114,8 @@ def get_client():
     if _qdrant_client is None:
         from qdrant_client import QdrantClient
         cfg = _get_config()
-        _qdrant_client = QdrantClient(url=cfg.qdrant_url, timeout=30)
+        _qdrant_api_key = os.getenv("DJE_QDRANT_API_KEY", "") or None
+        _qdrant_client = QdrantClient(url=cfg.qdrant_url, api_key=_qdrant_api_key, timeout=30)
     return _qdrant_client
 
 
