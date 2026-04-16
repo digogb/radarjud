@@ -67,6 +67,7 @@ services:
       - "DJE_MONITOR_INTERVAL_MINUTES=30"
       - "DJE_MONITOR_MAX_PAGINAS=10"
       - DJE_QDRANT_URL=http://qdrant:6333
+      - DJE_QDRANT_API_KEY=${QDRANT_API_KEY}
     restart: unless-stopped
     depends_on:
       postgres:
@@ -91,6 +92,7 @@ services:
       - .env
     environment:
       - DJE_QDRANT_URL=http://qdrant:6333
+      - DJE_QDRANT_API_KEY=${QDRANT_API_KEY}
     restart: unless-stopped
     depends_on:
       postgres:
@@ -128,6 +130,7 @@ services:
       - .env
     environment:
       - DJE_QDRANT_URL=http://qdrant:6333
+      - DJE_QDRANT_API_KEY=${QDRANT_API_KEY}
     restart: unless-stopped
     depends_on:
       postgres:
