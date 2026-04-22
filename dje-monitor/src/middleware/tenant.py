@@ -47,6 +47,18 @@ class TenantMiddleware(BaseHTTPMiddleware):
             clear_current_tenant()
             return await call_next(request)
 
+        # Bearer presente mas inválido/expirado → 401 para o frontend poder fazer refresh
+        if self._token_service:
+            auth_header = request.headers.get("Authorization", "")
+            if auth_header.startswith("Bearer "):
+                try:
+                    self._token_service.decode_token(auth_header[7:])
+                except Exception:
+                    return JSONResponse(
+                        status_code=401,
+                        content={"detail": "Token expirado ou inválido."},
+                    )
+
         tenant_id = await self._resolve_tenant_id(request)
 
         if not tenant_id:
