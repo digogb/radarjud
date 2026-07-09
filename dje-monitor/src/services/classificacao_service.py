@@ -15,15 +15,26 @@ logger = logging.getLogger(__name__)
 _SISTEMA = """\
 Você é um analista jurídico especializado em execuções judiciais brasileiras.
 
-Dadas publicações recentes do DJe sobre um processo, determine:
-1. O PAPEL da parte monitorada neste processo específico (credora ou devedora)
-2. Se há crédito a receber pela parte monitorada
+Dadas publicações do DJe sobre um processo, determine DUAS coisas de forma INDEPENDENTE:
 
-Sinais de CREDOR: alvará/mandado de levantamento EM FAVOR da parte, precatório a receber, \
-RPV, acordo em que a parte recebe, depósito judicial a ser levantado pela parte.
+1. PAPEL — deriva APENAS da posição processual da parte monitorada, NÃO da existência de crédito:
+   - CREDOR: exequente, autor/requerente em ação de cobrança/execução, apelante que busca
+     receber, beneficiário de alvará/levantamento/precatório/RPV.
+   - DEVEDOR: executado, réu/requerido em execução ou cumprimento de sentença, parte
+     intimada a pagar/depositar, parte que sofre penhora ou condenação a pagar.
+   - INDEFINIDO: quando a posição não puder ser determinada pelas publicações.
+   REGRA: nunca classifique como DEVEDOR só porque não há sinal de crédito. Ausência de
+   crédito NÃO torna a parte devedora — se ela é autora/exequente, o papel é CREDOR.
 
-Sinais de DEVEDOR: intimação para pagar/depositar, penhora de bens da parte, \
-cumprimento de sentença contra a parte, condenação da parte a pagar.
+2. VEREDICTO — indica se há crédito concreto a receber:
+   - CREDITO_IDENTIFICADO: há alvará/mandado de levantamento, precatório, RPV ou valor
+     líquido em favor da parte.
+   - CREDITO_POSSIVEL: a parte está no polo credor (exequente/autora de cobrança) e há
+     indício de recebimento futuro, mas sem valor/levantamento já formalizado.
+   - SEM_CREDITO: parte devedora, ou nenhum indício de recebimento.
+   REGRA: se a parte é CREDOR e há qualquer sinal de levantamento/pagamento/execução em seu
+   favor (ex.: art. 523, cumprimento de sentença movido por ela), classifique no MÍNIMO
+   como CREDITO_POSSIVEL — não use SEM_CREDITO nesse caso.
 
 Responda APENAS neste formato (sem explicação adicional):
 PAPEL: [CREDOR | DEVEDOR | INDEFINIDO]
@@ -32,8 +43,8 @@ VALOR: [valor em reais ou "não identificado"]
 JUSTIFICATIVA: [1 frase curta]\
 """
 
-_MAX_CHARS_POR_PUB = 500
-_MAX_PUBS = 3
+_MAX_CHARS_POR_PUB = 2000
+_MAX_PUBS = 5
 
 _RE_PAPEL = re.compile(r"PAPEL:\s*(CREDOR|DEVEDOR|INDEFINIDO)", re.IGNORECASE)
 _RE_VEREDICTO = re.compile(
@@ -62,6 +73,38 @@ def _extrair_partes(publicacoes: list[dict]) -> dict[str, list[str]]:
     return {"ativo": sorted(ativo), "passivo": sorted(passivo)}
 
 
+def _tem_padrao(pub: dict, padroes: list[str]) -> bool:
+    """True se o texto da publicação contém algum padrão positivo."""
+    texto = ((pub.get("texto_completo") or "") + " " + (pub.get("texto_resumo") or "")).lower()
+    return any(p.lower() in texto for p in padroes)
+
+
+def _extrair_janela(texto: str, padroes: list[str], max_chars: int) -> str:
+    """Retorna um trecho de ~max_chars centrado no primeiro padrão positivo.
+
+    Garante que o sinal que disparou a oportunidade (ex.: "alvará de levantamento")
+    entre no contexto enviado à IA, em vez de cortar sempre o início do texto.
+    Sem match, devolve o começo do texto.
+    """
+    if not texto:
+        return ""
+    if len(texto) <= max_chars:
+        return texto
+    txt_lower = texto.lower()
+    pos = -1
+    for pad in padroes or []:
+        idx = txt_lower.find(pad.lower())
+        if idx != -1 and (pos == -1 or idx < pos):
+            pos = idx
+    if pos == -1:
+        return texto[:max_chars]
+    antes = min(300, max_chars // 4)
+    inicio = max(0, pos - antes)
+    fim = min(len(texto), inicio + max_chars)
+    trecho = texto[inicio:fim]
+    return ("…" if inicio > 0 else "") + trecho + ("…" if fim < len(texto) else "")
+
+
 def classificar_processo(
     publicacoes: list[dict],
     api_key: str,
@@ -70,6 +113,7 @@ def classificar_processo(
     numero_processo: str | None = None,
     max_pubs: int = _MAX_PUBS,
     max_chars: int = _MAX_CHARS_POR_PUB,
+    padroes_positivos: list[str] | None = None,
 ) -> dict:
     """Classifica credor/devedor a partir das publicações mais recentes.
 
@@ -80,8 +124,11 @@ def classificar_processo(
         modelo: modelo a usar (ex: gpt-4o-mini).
         pessoa_nome: nome da pessoa monitorada.
         numero_processo: número do processo.
-        max_pubs: quantas publicações enviar (do final = mais recentes).
+        max_pubs: quantas publicações enviar.
         max_chars: limite de caracteres por publicação.
+        padroes_positivos: expressões dos padrões de oportunidade ativos. Usadas para
+                     (a) priorizar as publicações que contêm o sinal e (b) centrar o
+                     recorte de texto no sinal, evitando cortá-lo do contexto.
 
     Returns:
         Dict com chaves: papel, veredicto, valor, justificativa.
@@ -89,6 +136,7 @@ def classificar_processo(
     Raises:
         RuntimeError: se a chamada à API falhar.
     """
+    padroes_positivos = padroes_positivos or []
     from openai import OpenAI
 
     if not publicacoes:
@@ -99,8 +147,19 @@ def classificar_processo(
             "justificativa": "Nenhuma publicação encontrada.",
         }
 
-    # Usar as publicações mais recentes (últimas N da lista ordenada ASC)
-    recentes = publicacoes[-max_pubs:]
+    # Selecionar publicações a enviar: priorizar as que contêm o sinal positivo
+    # (é nelas que está a evidência de crédito), completando com as mais recentes.
+    # Mantém a ordem cronológica (publicacoes já vem ASC).
+    if padroes_positivos:
+        idx_com_sinal = [i for i, p in enumerate(publicacoes) if _tem_padrao(p, padroes_positivos)]
+        idx_sel = set(idx_com_sinal[-max_pubs:])
+        for i in range(len(publicacoes) - 1, -1, -1):
+            if len(idx_sel) >= max_pubs:
+                break
+            idx_sel.add(i)
+        recentes = [p for i, p in enumerate(publicacoes) if i in idx_sel]
+    else:
+        recentes = publicacoes[-max_pubs:]
 
     # Montar contexto
     partes = _extrair_partes(publicacoes)
@@ -122,7 +181,7 @@ def classificar_processo(
         orgao = pub.get("orgao", "")
         tipo = pub.get("tipo_comunicacao", "")
         texto = (pub.get("texto_completo") or pub.get("texto_resumo") or "").strip()
-        texto = texto[:max_chars]
+        texto = _extrair_janela(texto, padroes_positivos, max_chars)
         linhas.append(f"\n[{data}] {tipo} — {orgao}\n{texto}")
 
     conteudo = "\n".join(linhas)

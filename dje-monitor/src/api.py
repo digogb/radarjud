@@ -1,6 +1,6 @@
 from fastapi import Depends, FastAPI, Query, HTTPException, BackgroundTasks, UploadFile, File, Request
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 from typing import List, Optional, Any
 import logging
 import re
@@ -267,11 +267,25 @@ async def search_name(
 # Pessoas Monitoradas
 # ============================================================
 
+def _validar_cpf_cnpj(v: Optional[str]) -> Optional[str]:
+    """Normaliza para dígitos e valida tamanho (CPF=11, CNPJ=14). Vazio → None."""
+    if v is None:
+        return None
+    digitos = re.sub(r"\D", "", v)
+    if not digitos:
+        return None
+    if len(digitos) > 14:
+        raise ValueError("CPF/CNPJ inválido: mais de 14 dígitos")
+    return digitos
+
+
 class PessoaMonitoradaCreate(BaseModel):
     nome: str
     cpf: Optional[str] = None
     tribunal_filtro: Optional[str] = None
     intervalo_horas: int = 12
+
+    _norm_cpf = field_validator("cpf")(_validar_cpf_cnpj)
 
 
 class PessoaMonitoradaUpdate(BaseModel):
@@ -280,6 +294,8 @@ class PessoaMonitoradaUpdate(BaseModel):
     tribunal_filtro: Optional[str] = None
     intervalo_horas: Optional[int] = None
     ativo: Optional[bool] = None
+
+    _norm_cpf = field_validator("cpf")(_validar_cpf_cnpj)
 
 
 @app.post("/api/v1/pessoas-monitoradas", status_code=201)

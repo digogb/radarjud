@@ -238,12 +238,16 @@ def varrer_oportunidades_task(tenant_id: str | None = None) -> None:
         if enfileirados:
             logger.info(f"varrer_oportunidades_task: {enfileirados} classificação(ões) enfileirada(s)")
 
-    # Criar alertas apenas para publicações recentes (7 dias)
+    # Criar alertas para publicações recentes (7 dias). Exceção: na PRIMEIRA varredura
+    # de uma pessoa, alertar o histórico inteiro (sem janela) — assim oportunidades já
+    # existentes ao cadastrar a pessoa geram alerta uma única vez.
     from datetime import datetime, timedelta
     cutoff = (datetime.utcnow() - timedelta(days=7)).strftime("%d/%m/%Y")
+    primeira_varredura_ids = set(repo.pessoas_primeira_varredura())
     oportunidades_recentes = [
         op for op in oportunidades_amplo
         if _data_gte(op.get("data_disponibilizacao", ""), cutoff)
+        or op["pessoa_id"] in primeira_varredura_ids
     ]
 
     classificacoes_atuais = {}
@@ -274,6 +278,14 @@ def varrer_oportunidades_task(tenant_id: str | None = None) -> None:
         novas += 1
     logger.info(f"varrer_oportunidades_task: {novas} nova(s) oportunidade(s) detectada(s)")
 
+    # Marcar as pessoas cuja primeira varredura acabou de rodar (mesmo as sem candidatos),
+    # para que as próximas varreduras voltem a usar a janela de 7 dias.
+    if primeira_varredura_ids:
+        repo.marcar_oportunidades_varridas(list(primeira_varredura_ids))
+        logger.info(
+            f"varrer_oportunidades_task: primeira varredura concluída para {len(primeira_varredura_ids)} pessoa(s)"
+        )
+
 
 # ============================================================
 # FILA: classificacao — Classificação de credor/devedor via LLM
@@ -281,7 +293,7 @@ def varrer_oportunidades_task(tenant_id: str | None = None) -> None:
 
 
 _CLASSIF_CACHE_TTL = 60 * 60 * 24 * 7  # 7 dias
-_CLASSIF_CACHE_VERSION = "v1"
+_CLASSIF_CACHE_VERSION = "v2"  # v2: prompt papel≠veredicto + janela ao redor do sinal
 
 
 def _classif_cache_key(pessoa_id: int, numero_processo: str, total_pubs: int) -> str:
@@ -345,6 +357,11 @@ def classificar_processo_task(tenant_id: str, pessoa_id: int, numero_processo: s
     pessoa = repo.obter_pessoa(pessoa_id)
     pessoa_nome = pessoa["nome"] if pessoa else None
 
+    padroes_pos = [
+        p["expressao"] for p in repo.listar_padroes_oportunidade()
+        if p.get("tipo") == "positivo" and p.get("ativo")
+    ]
+
     from services.classificacao_service import classificar_processo
     try:
         resultado = classificar_processo(
@@ -355,6 +372,7 @@ def classificar_processo_task(tenant_id: str, pessoa_id: int, numero_processo: s
             numero_processo=numero_processo,
             max_pubs=config.classif_max_pubs,
             max_chars=config.classif_max_chars,
+            padroes_positivos=padroes_pos,
         )
     except RuntimeError as e:
         logger.error(f"classificar_processo_task: falha LLM para pessoa={pessoa_id} proc={numero_processo}: {e}")

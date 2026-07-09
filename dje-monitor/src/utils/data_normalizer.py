@@ -27,6 +27,19 @@ def normalizar_nome(nome: str) -> str:
     return sem_acento.strip().upper()
 
 
+def normalizar_documento(doc) -> str | None:
+    """Extrai apenas os dígitos de um CPF/CNPJ.
+
+    '123.456.789-01'      → '12345678901'   (CPF, 11 dígitos)
+    '12.345.678/0001-90'  → '12345678000190' (CNPJ, 14 dígitos)
+    Retorna None se vazio. Não valida quantidade de dígitos (isso cabe à camada de API).
+    """
+    if not doc:
+        return None
+    digitos = re.sub(r"\D", "", str(doc))
+    return digitos or None
+
+
 def limpar_html(texto: str) -> str:
     """Remove tags HTML e normaliza espaços."""
     if not texto:

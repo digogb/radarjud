@@ -222,6 +222,31 @@ def build_processo_text(processo: dict) -> str:
 # encode() — roteado automaticamente para OpenAI ou nomic
 # ---------------------------------------------------------------------------
 
+# text-embedding-3-small aceita até 8192 tokens. Em português jurídico a densidade
+# de tokens é maior (~2.5-3 chars/token), então 20000 chars já pode estourar — por isso
+# _openai_embed_text re-tenta cortando pela metade quando a API recusar por tamanho.
+_EMBED_MAX_CHARS = 20000
+
+
+def _openai_embed_text(client, model: str, text: str, dims: int, max_chars: int = _EMBED_MAX_CHARS) -> list:
+    """Embeda um texto único, reduzindo o corte pela metade se a OpenAI recusar por
+    exceder o limite de tokens (BadRequestError 400 'maximum context length')."""
+    from openai import BadRequestError
+
+    safe = text[:max_chars]
+    while True:
+        try:
+            resp = client.embeddings.create(model=model, input=safe, dimensions=dims)
+            return resp.data[0].embedding
+        except BadRequestError as e:
+            if "maximum context length" not in str(e) or len(safe) <= 500:
+                raise
+            safe = safe[: len(safe) // 2]
+            logger.warning(
+                f"embedding: texto excede limite de tokens, truncando para {len(safe)} chars e re-tentando"
+            )
+
+
 def encode(text: str, prefix: str = "search_document") -> list:
     """Gera embedding para um texto.
 
@@ -232,14 +257,7 @@ def encode(text: str, prefix: str = "search_document") -> list:
 
     if _is_openai_model(cfg.embedding_model):
         client = _get_openai_client()
-        # text-embedding-3-small: limite de 8192 tokens (~4 chars/token para português)
-        safe_text = text[:30000]
-        response = client.embeddings.create(
-            model=cfg.embedding_model,
-            input=safe_text,
-            dimensions=cfg.embedding_dims,
-        )
-        return response.data[0].embedding
+        return _openai_embed_text(client, cfg.embedding_model, text, cfg.embedding_dims)
 
     # Nomic local
     model = get_model()
@@ -257,23 +275,35 @@ def _encode_batch(texts: list[str], prefix: str = "search_document", batch_size:
     cfg = _get_config()
 
     if _is_openai_model(cfg.embedding_model):
+        from openai import BadRequestError
         client = _get_openai_client()
         all_embeddings = []
-        # text-embedding-3-small: limite de 8192 tokens (~4 chars/token para português)
-        # Truncar cada texto para 30000 chars (~7500 tokens) com margem de segurança
-        safe_texts = [t[:30000] for t in texts]
+        safe_texts = [t[:_EMBED_MAX_CHARS] for t in texts]
         # Enviar em sub-batches de 500 (limite seguro para payload)
         openai_batch = 500
         for i in range(0, len(safe_texts), openai_batch):
             chunk = safe_texts[i: i + openai_batch]
-            response = client.embeddings.create(
-                model=cfg.embedding_model,
-                input=chunk,
-                dimensions=cfg.embedding_dims,
-            )
-            # Garantir ordem correta pelo índice
-            ordered = sorted(response.data, key=lambda x: x.index)
-            all_embeddings.extend([item.embedding for item in ordered])
+            try:
+                response = client.embeddings.create(
+                    model=cfg.embedding_model,
+                    input=chunk,
+                    dimensions=cfg.embedding_dims,
+                )
+                # Garantir ordem correta pelo índice
+                ordered = sorted(response.data, key=lambda x: x.index)
+                all_embeddings.extend([item.embedding for item in ordered])
+            except BadRequestError as e:
+                if "maximum context length" not in str(e):
+                    raise
+                # Algum item do batch estourou o limite de tokens: refazer item a item
+                # com truncamento adaptativo (só o texto ofensor é cortado mais).
+                logger.warning(
+                    "embedding batch excedeu limite de tokens; refazendo item a item"
+                )
+                for t in chunk:
+                    all_embeddings.append(
+                        _openai_embed_text(client, cfg.embedding_model, t, cfg.embedding_dims)
+                    )
         return all_embeddings
 
     # Nomic local

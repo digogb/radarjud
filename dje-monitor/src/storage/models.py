@@ -155,6 +155,9 @@ class PessoaMonitorada(Base):
     ultimo_check = Column(DateTime, nullable=True)
     proximo_check = Column(DateTime, nullable=True)
     total_publicacoes = Column(Integer, default=0)
+    # Marca quando a primeira varredura de oportunidades já rodou para esta pessoa.
+    # NULL = ainda não varrida → a 1ª varredura alerta o histórico inteiro (sem janela de 7d).
+    oportunidades_varridas_em = Column(DateTime, nullable=True)
     # Dados de origem (planilha)
     numero_processo = Column(String(30), nullable=True)
     comarca = Column(String(200), nullable=True)

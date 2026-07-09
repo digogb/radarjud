@@ -126,8 +126,8 @@ class Config:
     login_rate_limit_window_seconds: int = int(os.getenv("DJE_AUTH_RATE_LIMIT_WINDOW_SECONDS", "900"))
 
     # Classificação automática de credor/devedor
-    classif_max_pubs: int = int(os.getenv("DJE_CLASSIF_MAX_PUBS", "3"))
-    classif_max_chars: int = int(os.getenv("DJE_CLASSIF_MAX_CHARS", "500"))
+    classif_max_pubs: int = int(os.getenv("DJE_CLASSIF_MAX_PUBS", "5"))
+    classif_max_chars: int = int(os.getenv("DJE_CLASSIF_MAX_CHARS", "2000"))
 
     @property
     def auth_habilitado(self) -> bool:

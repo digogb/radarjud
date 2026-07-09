@@ -20,6 +20,16 @@ try:
 except ImportError:
     def _get_tid(): return None
 
+try:
+    from utils.data_normalizer import normalizar_data as _normalizar_data
+except ImportError:
+    def _normalizar_data(s): return s or ""
+
+try:
+    from utils.data_normalizer import normalizar_documento as _normalizar_doc
+except ImportError:
+    def _normalizar_doc(d): return d or None
+
 logger = logging.getLogger(__name__)
 
 
@@ -361,6 +371,7 @@ class DiarioRepository:
         Deduplicação: busca por CPF primeiro, depois por nome.
         Se encontrar existente: enriquece campos nulos e reativa se inativo.
         """
+        cpf = _normalizar_doc(cpf)  # só dígitos: CPF(11)/CNPJ(14) cabem em varchar(14)
         with self.get_session() as session:
             existente = None
 
@@ -535,6 +546,8 @@ class DiarioRepository:
             p = session.get(PessoaMonitorada, pessoa_id)
             if not p:
                 return None
+            if "cpf" in kwargs:
+                kwargs["cpf"] = _normalizar_doc(kwargs["cpf"])
             for campo, valor in kwargs.items():
                 if campo in campos_permitidos:
                     setattr(p, campo, valor)
@@ -953,7 +966,7 @@ class DiarioRepository:
                 .limit(limit)
                 .all()
             )
-            return [
+            resultado = [
                 {
                     "data_disponibilizacao": p.data_disponibilizacao or "",
                     "orgao": p.orgao or "",
@@ -965,6 +978,9 @@ class DiarioRepository:
                 }
                 for p in pubs
             ]
+            # data_disponibilizacao é string 'dd/mm/yyyy'; ordenar por data real (ASC)
+            resultado.sort(key=lambda d: _normalizar_data(d["data_disponibilizacao"]))
+            return resultado
 
     # ===== Oportunidades de Crédito =====
 
@@ -1094,26 +1110,32 @@ class DiarioRepository:
                     for p in padroes_neg
                 ]
 
+                # data_disponibilizacao é string 'dd/mm/yyyy' — comparar por data real
                 processo_max_data: dict[tuple, str] = {}
                 for r in result:
                     if not r['numero_processo']:
                         continue
                     key = (r['pessoa_id'], r['numero_processo'])
                     data = r['data_disponibilizacao'] or ''
-                    if key not in processo_max_data or data > processo_max_data[key]:
+                    if key not in processo_max_data or _normalizar_data(data) > _normalizar_data(processo_max_data[key]):
                         processo_max_data[key] = data
 
                 processos_invalidados: set[tuple] = set()
                 for (pessoa_id, numero_processo), max_data in processo_max_data.items():
-                    tem_negativo = (
-                        session.query(PublicacaoMonitorada.id)
+                    # Busca no banco por padrão negativo é feita sem filtro de data (string
+                    # não é comparável); a comparação de "posterior" é feita em Python.
+                    max_norm = _normalizar_data(max_data)
+                    negativos = (
+                        session.query(PublicacaoMonitorada.data_disponibilizacao)
                         .filter(
                             PublicacaoMonitorada.pessoa_id == pessoa_id,
                             PublicacaoMonitorada.numero_processo == numero_processo,
-                            PublicacaoMonitorada.data_disponibilizacao > max_data,
                             or_(*filtros_neg),
                         )
-                        .first()
+                        .all()
+                    )
+                    tem_negativo = any(
+                        _normalizar_data(d[0] or '') > max_norm for d in negativos
                     )
                     if tem_negativo:
                         processos_invalidados.add((pessoa_id, numero_processo))
@@ -1235,6 +1257,38 @@ class DiarioRepository:
                 )
                 .first()
             ) is not None
+
+    def pessoas_primeira_varredura(self) -> list[int]:
+        """IDs de pessoas cuja primeira varredura de oportunidades ainda não rodou.
+
+        Só inclui pessoas com `ultimo_check` preenchido — ou seja, cujo first_check já
+        salvou as publicações históricas —, evitando marcar como varrida uma pessoa
+        recém-cadastrada antes do first_check assíncrono terminar.
+        """
+        with self.get_session() as session:
+            rows = (
+                session.query(PessoaMonitorada.id)
+                .filter(
+                    PessoaMonitorada.ativo == True,
+                    PessoaMonitorada.ultimo_check != None,
+                    PessoaMonitorada.oportunidades_varridas_em == None,
+                )
+                .all()
+            )
+            return [r[0] for r in rows]
+
+    def marcar_oportunidades_varridas(self, pessoa_ids: list[int]) -> None:
+        """Marca que a primeira varredura de oportunidades já rodou para estas pessoas."""
+        if not pessoa_ids:
+            return
+        with self.get_session() as session:
+            agora = datetime.utcnow()
+            (
+                session.query(PessoaMonitorada)
+                .filter(PessoaMonitorada.id.in_(pessoa_ids))
+                .update({PessoaMonitorada.oportunidades_varridas_em: agora}, synchronize_session=False)
+            )
+            session.commit()
 
     # ===== Classificações de Processo (IA) =====
 
