@@ -304,9 +304,18 @@ class DJESearchClient:
         """
         polo = DJEPolo()
 
+        # Nomes que são advogados (destinatarioadvogados) NÃO são partes — em muitas
+        # intimações os destinatarios são exatamente os advogados, cada um carregando o
+        # polo da parte que representa. Sem excluí-los, os advogados entram como partes.
+        advogado_nomes = {
+            (da.get("advogado") or {}).get("nome", "").strip().upper()
+            for da in item.get("destinatarioadvogados", [])
+        }
+        advogado_nomes.discard("")
+
         for dest in item.get("destinatarios", []):
             nome = dest.get("nome", "").strip()
-            if not nome:
+            if not nome or nome.upper() in advogado_nomes:
                 continue
             tipo = str(dest.get("polo", "")).upper()
             if tipo in ("A",) or "ATIVO" in tipo or "AUTOR" in tipo:
@@ -316,6 +325,7 @@ class DJESearchClient:
             else:
                 polo.outros.append(nome)
 
+        # Se sobrou vazio (destinatarios eram só advogados), extrai partes do texto.
         if not polo.ativo and not polo.passivo and texto:
             raw = extrair_polos_do_texto(texto)
             polo.ativo = raw.get("ativo", [])

@@ -116,8 +116,12 @@ def extrair_polos_do_texto(texto: str) -> dict:
     texto_upper = texto.upper()
 
     def _limpar(raw: str) -> str:
+        # Corta a captura ao encontrar qualquer rótulo de papel/marcador seguinte,
+        # evitando que o nome de uma parte "vaze" para o próximo (ex.: "... COELHO REQUERIDO").
         token = re.split(
-            r"\s-\s|ADVOGAD|R[ÉE]U|AUTOR|JUIZ|OAB|CPF|CNPJ|\.\s|;|(?:\s\w{2}\s)", raw
+            r"\s-\s|ADVOGAD|PATRONO|R[ÉE]U|AUTOR|EXEQUENTE|EXECUTAD|REQUERENTE|REQUERID"
+            r"|IMPETR|EMBARG|APELA|AGRAVA|RECORR|SUSCIT|JUIZ|OAB|CPF|CNPJ|\.\s|;|(?:\s\w{2}\s)",
+            raw,
         )
         return token[0].strip().title()
 
