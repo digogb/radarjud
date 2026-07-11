@@ -76,6 +76,8 @@ class Config:
     semantic_score_threshold: float = float(os.getenv("DJE_SEMANTIC_SCORE_THRESHOLD", "0.35"))
     semantic_score_threshold_processos: float = float(os.getenv("DJE_SEMANTIC_SCORE_THRESHOLD_PROCESSOS", "0.25"))
     semantic_max_results: int = int(os.getenv("DJE_SEMANTIC_MAX_RESULTS", "20"))
+    # Threshold do rerank semântico de oportunidades (descarta falsos positivos do ILIKE).
+    rerank_threshold: float = float(os.getenv("DJE_RERANK_THRESHOLD", "0.45"))
 
     def __post_init__(self):
         self.base_dir = Path(self.base_dir)

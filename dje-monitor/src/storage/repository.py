@@ -991,6 +991,7 @@ class DiarioRepository:
         Processos com publicação posterior contendo padrão negativo ativo são excluídos do resultado.
         """
         from sqlalchemy import or_
+        from sqlalchemy import func as sa_func
 
         since = datetime.utcnow() - timedelta(days=dias)
 
@@ -1008,8 +1009,16 @@ class DiarioRepository:
             if not padroes_pos:
                 return []
 
+            # Matching resiliente a acentos (unaccent) + inclui texto_resumo além do
+            # texto_completo. `unaccent('alvará') ILIKE unaccent('%alvara%')` casa mesmo
+            # com OCR/DJe sem acento. O índice GIN trigram em texto_completo (migração 020)
+            # acelera o ILIKE. `_texto_busca` concatena completo + resumo.
+            _texto_busca = sa_func.unaccent(
+                sa_func.coalesce(PublicacaoMonitorada.texto_completo, '') + ' ' +
+                sa_func.coalesce(PublicacaoMonitorada.texto_resumo, '')
+            )
             filtros_pos = [
-                PublicacaoMonitorada.texto_completo.ilike(f'%{p.expressao}%')
+                _texto_busca.ilike(sa_func.unaccent(f'%{p.expressao}%'))
                 for p in padroes_pos
             ]
 
@@ -1030,12 +1039,17 @@ class DiarioRepository:
                 .all()
             )
 
+            # Comparação em Python também sem acento, para casar com o unaccent do SQL.
+            from utils.data_normalizer import normalizar_nome as _sa
+            def _norm(s: str) -> str:
+                return _sa(s).lower()  # remove acento + lower
+
             result = []
             for pub, pessoa in rows:
-                texto = ((pub.texto_completo or "") + " " + (pub.texto_resumo or "")).lower()
+                texto = _norm((pub.texto_completo or "") + " " + (pub.texto_resumo or ""))
                 padrao_nome = "sinal de recebimento"
                 for p in padroes_pos:
-                    if p.expressao.lower() in texto:
+                    if _norm(p.expressao) in texto:
                         padrao_nome = p.nome
                         break
 
@@ -1045,12 +1059,12 @@ class DiarioRepository:
                 # pagamento" (positivo) vence "revogação" (negativo).
                 if padroes_neg:
                     neg_match = max(
-                        (pn.expressao for pn in padroes_neg if pn.expressao.lower() in texto),
+                        (pn.expressao for pn in padroes_neg if _norm(pn.expressao) in texto),
                         key=len, default=None,
                     )
                     if neg_match:
                         pos_match = max(
-                            (p.expressao for p in padroes_pos if p.expressao.lower() in texto),
+                            (p.expressao for p in padroes_pos if _norm(p.expressao) in texto),
                             key=len, default=None,
                         )
                         if not pos_match or len(pos_match) <= len(neg_match):
@@ -1120,10 +1134,7 @@ class DiarioRepository:
             # Se sim, o processo inteiro é removido dos resultados.
             if result and padroes_neg:
                 filtros_neg = [
-                    or_(
-                        PublicacaoMonitorada.texto_completo.ilike(f'%{p.expressao}%'),
-                        PublicacaoMonitorada.texto_resumo.ilike(f'%{p.expressao}%'),
-                    )
+                    _texto_busca.ilike(sa_func.unaccent(f'%{p.expressao}%'))
                     for p in padroes_neg
                 ]
 
@@ -1325,6 +1336,7 @@ class DiarioRepository:
         justificativa: str | None,
         total_pubs: int,
         valor_numerico: "float | None" = None,
+        sig_relevancia: "str | None" = None,
     ) -> dict:
         """Upsert de classificação de processo. Atualiza se já existir."""
         digits = "".join(c for c in numero_processo if c.isdigit())
@@ -1344,6 +1356,7 @@ class DiarioRepository:
                 classif.valor_numerico = valor_numerico
                 classif.justificativa = justificativa
                 classif.total_pubs = total_pubs
+                classif.sig_relevancia = sig_relevancia
                 classif.atualizado_em = datetime.utcnow()
             else:
                 classif = ClassificacaoProcesso(
@@ -1356,6 +1369,7 @@ class DiarioRepository:
                     valor_numerico=valor_numerico,
                     justificativa=justificativa,
                     total_pubs=total_pubs,
+                    sig_relevancia=sig_relevancia,
                 )
                 session.add(classif)
             session.flush()
@@ -1369,6 +1383,7 @@ class DiarioRepository:
                 "valor_numerico": float(classif.valor_numerico) if classif.valor_numerico is not None else None,
                 "justificativa": classif.justificativa,
                 "total_pubs": classif.total_pubs,
+                "sig_relevancia": classif.sig_relevancia,
             }
             session.commit()
             return result
@@ -1396,6 +1411,7 @@ class DiarioRepository:
                 "valor_numerico": float(classif.valor_numerico) if classif.valor_numerico is not None else None,
                 "justificativa": classif.justificativa,
                 "total_pubs": classif.total_pubs,
+                "sig_relevancia": classif.sig_relevancia,
             }
 
     def obter_classificacoes_batch(self, chaves: list[tuple[int, str]]) -> dict:

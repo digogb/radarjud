@@ -261,7 +261,10 @@ class ClassificacaoProcesso(Base):
     valor = Column(String(100))             # "R$ 50.000,00" ou "não identificado"
     valor_numerico = Column(Numeric(15, 2), nullable=True)  # valor como número, p/ ordenação
     justificativa = Column(String(500))     # 1 frase explicando a classificação
-    total_pubs = Column(Integer, nullable=False)  # para invalidação automática
+    total_pubs = Column(Integer, nullable=False)  # nº de pubs quando classificado (info)
+    # Assinatura de relevância: muda só quando o conteúdo relevante muda (pub com padrão
+    # pos/neg ou alteração de polos). Pub trivial não altera → evita reclassificar à toa.
+    sig_relevancia = Column(String(40), nullable=True)
     criado_em = Column(DateTime, default=datetime.utcnow)
     atualizado_em = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 

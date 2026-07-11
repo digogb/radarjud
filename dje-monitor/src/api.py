@@ -706,7 +706,7 @@ def buscar_oportunidades(
     if semantico and items:
         from services.embedding_service import rerank_oportunidades
         pub_ids = [item["id"] for item in items]
-        scores = rerank_oportunidades(pub_ids, threshold=0.45, tenant_id=_tenant_id)
+        scores = rerank_oportunidades(pub_ids, threshold=config.rerank_threshold, tenant_id=_tenant_id)
         items = [item for item in items if item["id"] in scores]
         for item in items:
             item["score_semantico"] = scores[item["id"]]

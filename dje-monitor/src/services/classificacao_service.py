@@ -155,6 +155,32 @@ def _tem_padrao(pub: dict, padroes: list[str]) -> bool:
     return any(p.lower() in texto for p in padroes)
 
 
+def assinatura_relevancia(publicacoes: list[dict], padroes: list[str]) -> str:
+    """Assinatura que muda só quando o conteúdo RELEVANTE à classificação muda.
+
+    Combina (a) nº de publicações que contêm algum padrão (pos/neg) e (b) hash do
+    conjunto de partes (polos ativo/passivo). Uma publicação trivial — sem padrão e
+    sem alterar partes — não muda a assinatura, evitando reclassificar via LLM à toa.
+    """
+    import hashlib
+    pats = [p.lower() for p in padroes]
+    n_com_padrao = 0
+    partes: set[str] = set()
+    for pub in publicacoes:
+        texto = ((pub.get("texto_completo") or "") + " " + (pub.get("texto_resumo") or "")).lower()
+        if any(pat in texto for pat in pats):
+            n_com_padrao += 1
+        try:
+            polos = json.loads(pub.get("polos_json") or "{}")
+            for nome in polos.get("ativo", []) + polos.get("passivo", []):
+                if nome and nome.strip():
+                    partes.add(nome.strip().lower())
+        except (ValueError, TypeError):
+            pass
+    h = hashlib.md5("|".join(sorted(partes)).encode("utf-8")).hexdigest()[:12]
+    return f"{n_com_padrao}:{h}"
+
+
 def _extrair_janela(texto: str, padroes: list[str], max_chars: int) -> str:
     """Retorna um trecho de ~max_chars com o CABEÇALHO + a janela do sinal positivo.
 

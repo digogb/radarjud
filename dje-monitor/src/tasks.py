@@ -233,7 +233,7 @@ def varrer_oportunidades_task(tenant_id: str | None = None) -> None:
     # Filtro semântico: pontuar candidatos e descartar falsos positivos
     if candidatos_amplo:
         pub_ids = [op["id"] for op in candidatos_amplo]
-        scores = rerank_oportunidades(pub_ids, threshold=0.45, tenant_id=tenant_id)
+        scores = rerank_oportunidades(pub_ids, threshold=config.rerank_threshold, tenant_id=tenant_id)
         oportunidades_amplo = [op for op in candidatos_amplo if op["id"] in scores]
         for op in oportunidades_amplo:
             op["score_semantico"] = scores[op["id"]]
@@ -334,9 +334,11 @@ _CLASSIF_CACHE_TTL = 60 * 60 * 24 * 7  # 7 dias
 _CLASSIF_CACHE_VERSION = "v6"  # v6: janela inclui cabeçalho/ementa (tipo de ação) + sinal
 
 
-def _classif_cache_key(pessoa_id: int, numero_processo: str, total_pubs: int) -> str:
+def _classif_cache_key(pessoa_id: int, numero_processo: str, sig: str) -> str:
     digits = "".join(c for c in numero_processo if c.isdigit())
-    return f"classif:{_CLASSIF_CACHE_VERSION}:{pessoa_id}:{digits}:{total_pubs}"
+    # Chaveado pela assinatura de relevância (não total_pubs): pub trivial não muda a
+    # chave → cache hit imediato, sem reclassificar.
+    return f"classif:{_CLASSIF_CACHE_VERSION}:{pessoa_id}:{digits}:{sig}"
 
 
 @dramatiq.actor(
@@ -374,7 +376,16 @@ def classificar_processo_task(
         return
 
     total_pubs = len(publicacoes)
-    cache_key = _classif_cache_key(pessoa_id, numero_processo, total_pubs)
+
+    # Assinatura de relevância: só muda quando o conteúdo relevante muda (pub com padrão
+    # ou alteração de polos). Pub trivial mantém a assinatura → cache hit, sem LLM.
+    from services.classificacao_service import assinatura_relevancia
+    padroes_ativos = [p for p in repo.listar_padroes_oportunidade() if p.get("ativo")]
+    padroes_pos = [p["expressao"] for p in padroes_ativos if p.get("tipo") == "positivo"]
+    padroes_all = [p["expressao"] for p in padroes_ativos]
+    sig = assinatura_relevancia(publicacoes, padroes_all)
+
+    cache_key = _classif_cache_key(pessoa_id, numero_processo, sig)
 
     r = None
     try:
@@ -386,7 +397,7 @@ def classificar_processo_task(
     # Determinar a classificação vigente: Redis → DB → OpenAI.
     resultado: dict | None = None
 
-    # 1. Redis cache
+    # 1. Redis cache (chave por assinatura)
     if r is not None:
         try:
             cached = r.get(cache_key)
@@ -396,14 +407,32 @@ def classificar_processo_task(
         except Exception as e:
             logger.warning(f"classificar_processo_task: erro lendo Redis: {e}")
 
-    # 2. DB
+    # 2. DB — válido enquanto a ASSINATURA DE RELEVÂNCIA não mudar (não mais total_pubs).
     if resultado is None:
         classif_db = repo.obter_classificacao(pessoa_id, numero_processo)
-        if classif_db and classif_db["total_pubs"] == total_pubs:
+        if classif_db and classif_db.get("sig_relevancia") == sig:
             resultado = classif_db
+            # Pub trivial (só total_pubs mudou): revalida barato, sem LLM.
+            if classif_db.get("total_pubs") != total_pubs:
+                repo.salvar_classificacao(
+                    pessoa_id=pessoa_id,
+                    numero_processo=numero_processo,
+                    papel=classif_db["papel"],
+                    veredicto=classif_db["veredicto"],
+                    valor=classif_db["valor"],
+                    valor_numerico=classif_db.get("valor_numerico"),
+                    justificativa=classif_db["justificativa"],
+                    total_pubs=total_pubs,
+                    sig_relevancia=sig,
+                )
+                logger.info(
+                    f"classificar_processo_task: relevância inalterada — total_pubs "
+                    f"atualizado ({classif_db.get('total_pubs')}→{total_pubs}) sem LLM "
+                    f"para pessoa={pessoa_id} proc={numero_processo}"
+                )
             try:
                 if r:
-                    r.setex(cache_key, _CLASSIF_CACHE_TTL, _json.dumps(classif_db, ensure_ascii=False))
+                    r.setex(cache_key, _CLASSIF_CACHE_TTL, _json.dumps(resultado, ensure_ascii=False))
             except Exception:
                 pass
             logger.debug(f"classificar_processo_task: DB hit para pessoa={pessoa_id} proc={numero_processo}")
@@ -412,11 +441,6 @@ def classificar_processo_task(
     if resultado is None:
         pessoa = repo.obter_pessoa(pessoa_id)
         pessoa_nome = pessoa["nome"] if pessoa else None
-
-        padroes_pos = [
-            p["expressao"] for p in repo.listar_padroes_oportunidade()
-            if p.get("tipo") == "positivo" and p.get("ativo")
-        ]
 
         from services.classificacao_service import classificar_processo
         try:
@@ -443,6 +467,7 @@ def classificar_processo_task(
             valor_numerico=resultado.get("valor_numerico"),
             justificativa=resultado["justificativa"],
             total_pubs=total_pubs,
+            sig_relevancia=sig,
         )
 
         try:
@@ -456,6 +481,7 @@ def classificar_processo_task(
                     "valor_numerico": resultado.get("valor_numerico"),
                     "justificativa": resultado["justificativa"],
                     "total_pubs": total_pubs,
+                    "sig_relevancia": sig,
                 }
                 r.setex(cache_key, _CLASSIF_CACHE_TTL, _json.dumps(cache_data, ensure_ascii=False))
         except Exception as e:
