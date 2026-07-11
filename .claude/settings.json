@@ -65,7 +65,9 @@
       "Bash(ssh stage \"sleep 5 && docker compose -f ~/radarjud/dje-monitor/docker-compose.yml -f ~/radarjud/dje-monitor/docker-compose.prod.yml -p dje-monitor logs --tail=30 api\")",
       "Bash(ssh stage \"cd ~/radarjud && git pull && cd dje-monitor && docker compose -f docker-compose.yml -f docker-compose.prod.yml build api && docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --force-recreate api worker scheduler\")",
       "Bash(ssh stage \"free -h && docker stats --no-stream --format ''table {{.Name}}\\\\t{{.MemUsage}}\\\\t{{.MemPerc}}''\")",
-      "Bash(ssh stage \"docker logs dje-monitor-web --tail=20 2>&1\")"
+      "Bash(ssh stage \"docker logs dje-monitor-web --tail=20 2>&1\")",
+      "Bash(git pull:*)",
+      "Bash(git stash:*)"
     ]
   }
 }
