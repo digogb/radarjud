@@ -50,7 +50,9 @@ Dadas publicações do DJe sobre um processo, determine DUAS coisas de forma IND
 3. VALOR — o valor em reais A RECEBER PELA PARTE MONITORADA, com menção explícita e em favor dela:
    - "valor": texto como aparece (ex.: "R$ 15.000,00") ou "não identificado".
    - "valor_numerico": o MESMO valor como número decimal (ex.: 15000.00), ou null se não
-     identificado OU se o valor não for da parte monitorada. Ponto decimal, sem milhar.\
+     identificado OU se o valor não for da parte monitorada. Ponto decimal, sem milhar.
+
+A "justificativa" deve ter no máximo 1 frase curta (até ~300 caracteres).\
 """
 
 _MAX_CHARS_POR_PUB = 2000
@@ -304,6 +306,10 @@ def _coerir_perspectiva(result: dict) -> dict:
         result["veredicto"] = "SEM_CREDITO"
         result["valor"] = None
         result["valor_numerico"] = None
+    # justificativa cabe em varchar(500) no DB (GPT-5 tende a ser mais verboso).
+    just = result.get("justificativa")
+    if isinstance(just, str) and len(just) > 500:
+        result["justificativa"] = just[:479].rstrip() + "…"
     return result
 
 
