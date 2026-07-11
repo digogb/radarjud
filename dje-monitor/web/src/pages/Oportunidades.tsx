@@ -192,20 +192,38 @@ function GrupoCard({
                 </span>
               )
             })()}
-            {grupo.ia_veredicto && (() => {
-              const vInfo = VEREDICTO_INFO[grupo.ia_veredicto]
-              return vInfo ? (
-                <span style={{
-                  background: vInfo.bg,
-                  color: vInfo.color,
-                  borderRadius: 6,
-                  padding: '2px 8px',
-                  fontSize: '0.73rem',
-                  fontWeight: 600,
-                }}>
-                  {vInfo.label}
-                </span>
-              ) : null
+            {(() => {
+              if (grupo.ia_veredicto) {
+                const vInfo = VEREDICTO_INFO[grupo.ia_veredicto]
+                return vInfo ? (
+                  <span style={{
+                    background: vInfo.bg,
+                    color: vInfo.color,
+                    borderRadius: 6,
+                    padding: '2px 8px',
+                    fontSize: '0.73rem',
+                    fontWeight: 600,
+                  }}>
+                    {vInfo.label}
+                  </span>
+                ) : null
+              }
+              // Sem classificação e não descartado → aguardando IA ("Em análise").
+              if (!grupo.descartado_por_usuario) {
+                return (
+                  <span style={{
+                    background: 'var(--glass-border)',
+                    color: 'var(--text-muted)',
+                    borderRadius: 6,
+                    padding: '2px 8px',
+                    fontSize: '0.73rem',
+                    fontWeight: 600,
+                  }}>
+                    Em análise
+                  </span>
+                )
+              }
+              return null
             })()}
             {grupo.total > 1 && (
               <span style={{
@@ -501,15 +519,24 @@ function ResumoCard({
 // Página principal
 // ---------------------------------------------------------------------------
 
-type Ordenacao = 'data_desc' | 'data_asc' | 'nome' | 'publicacoes' | 'valor_desc'
+type Ordenacao = 'relevancia' | 'data_desc' | 'data_asc' | 'nome' | 'publicacoes' | 'valor_desc'
 
 const ORDENACOES: { value: Ordenacao; label: string }[] = [
+  { value: 'relevancia', label: 'Relevância' },
   { value: 'data_desc', label: 'Mais recente' },
   { value: 'data_asc',  label: 'Mais antigo'  },
   { value: 'valor_desc', label: 'Maior valor' },
   { value: 'nome',      label: 'Nome (A→Z)'   },
   { value: 'publicacoes', label: 'Mais publicações' },
 ]
+
+/** Prioridade por sinal de crédito: confirmado < provável < em análise < sem crédito. */
+function prioridadeCredito(g: OportunidadeGrupo): number {
+  if (g.ia_veredicto === 'CREDITO_IDENTIFICADO') return 0  // confirmado
+  if (g.ia_veredicto === 'CREDITO_POSSIVEL') return 1      // provável
+  if (!g.ia_veredicto) return 2                            // em análise
+  return 3                                                  // sem crédito
+}
 
 /** Converte dd/mm/yyyy ou yyyy-mm-dd para yyyy-mm-dd (comparável como string). */
 function dataSortavel(d: string): string {
@@ -522,6 +549,14 @@ function dataSortavel(d: string): string {
 
 function ordenarGrupos(grupos: OportunidadeGrupo[], ord: Ordenacao): OportunidadeGrupo[] {
   return [...grupos].sort((a, b) => {
+    if (ord === 'relevancia') {
+      // Confirmados no topo, depois prováveis, em análise e sem crédito;
+      // dentro do mesmo grupo, mais recente primeiro.
+      const pa = prioridadeCredito(a)
+      const pb = prioridadeCredito(b)
+      if (pa !== pb) return pa - pb
+      return dataSortavel(b.data_mais_recente).localeCompare(dataSortavel(a.data_mais_recente))
+    }
     if (ord === 'data_desc') return dataSortavel(b.data_mais_recente).localeCompare(dataSortavel(a.data_mais_recente))
     if (ord === 'data_asc')  return dataSortavel(a.data_mais_recente).localeCompare(dataSortavel(b.data_mais_recente))
     if (ord === 'valor_desc') {
@@ -553,7 +588,7 @@ export default function Oportunidades() {
   const [resumoErro, setResumoErro] = useState('')
   const [filtroNome, setFiltroNome] = useState('')
   const [filtroProcesso, setFiltroProcesso] = useState('')
-  const [ordenacao, setOrdenacao] = useState<Ordenacao>('data_desc')
+  const [ordenacao, setOrdenacao] = useState<Ordenacao>('relevancia')
   const [abaAtiva, setAbaAtiva] = useState<'oportunidades' | 'acompanhar' | 'descartados' | 'descartados_usuario'>('oportunidades')
   const scrollPosRef = useRef(0)
 
