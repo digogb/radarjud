@@ -180,6 +180,37 @@ def _data_gte(data_str: str, cutoff_str: str) -> bool:
         return True  # na dúvida, inclui
 
 
+def _alerta_payload(op: dict) -> dict:
+    """Monta o payload mínimo (JSON-serializável) de um alerta de oportunidade.
+
+    Usado tanto na criação inline quanto no encadeamento via classificar_processo_task.
+    """
+    titulo = f"Oportunidade: {op['padrao_detectado']} | {op['tribunal']}"
+    descricao = f"{op['pessoa_nome']} — {(op.get('texto_resumo') or '')[:300]}"
+    return {"id": op["id"], "pessoa_id": op["pessoa_id"], "titulo": titulo, "descricao": descricao}
+
+
+def _criar_alertas_oportunidade(repo, alertas: list[dict]) -> int:
+    """Cria alertas OPORTUNIDADE_CREDITO a partir de payloads, com dedup por publicação.
+
+    Idempotente: alerta_oportunidade_existe evita duplicar em reprocessamentos/retries.
+    Retorna quantos alertas foram efetivamente criados.
+    """
+    n = 0
+    for a in alertas:
+        if repo.alerta_oportunidade_existe(a["id"]):
+            continue
+        repo.registrar_alerta(
+            pessoa_id=a["pessoa_id"],
+            publicacao_id=a["id"],
+            tipo="OPORTUNIDADE_CREDITO",
+            titulo=a["titulo"],
+            descricao=a["descricao"],
+        )
+        n += 1
+    return n
+
+
 @dramatiq.actor(
     queue_name="manutencao",
     max_retries=1,
@@ -220,7 +251,36 @@ def varrer_oportunidades_task(tenant_id: str | None = None) -> None:
         key = (op["pessoa_id"], op.get("numero_processo") or "")
         processos_vistos.setdefault(key, []).append(op)
 
-    # Enfileirar classificação LLM para processos ainda não classificados
+    # Construir payloads de alerta para publicações recentes (7 dias). Exceção: na
+    # PRIMEIRA varredura de uma pessoa, alertar o histórico inteiro (sem janela) —
+    # assim oportunidades já existentes ao cadastrar a pessoa geram alerta uma vez.
+    from datetime import datetime, timedelta
+    cutoff = (datetime.utcnow() - timedelta(days=7)).strftime("%d/%m/%Y")
+    primeira_varredura_ids = set(repo.pessoas_primeira_varredura())
+
+    alertas_por_proc: dict[tuple, list[dict]] = {}
+    alertas_sem_proc: list[dict] = []  # pubs sem numero_processo → não classificáveis
+    for op in oportunidades_amplo:
+        recente = (
+            _data_gte(op.get("data_disponibilizacao", ""), cutoff)
+            or op["pessoa_id"] in primeira_varredura_ids
+        )
+        if not recente:
+            continue
+        payload = _alerta_payload(op)
+        proc = op.get("numero_processo") or ""
+        if not proc:
+            alertas_sem_proc.append(payload)
+            continue
+        proc_digits = "".join(c for c in proc if c.isdigit())
+        alertas_por_proc.setdefault((op["pessoa_id"], proc_digits), []).append(payload)
+
+    # Classificação LLM + criação de alertas ENCADEADA: só criamos alertas de
+    # OPORTUNIDADE_CREDITO depois de saber o papel (para não notificar DEVEDOR).
+    #   - Processo já classificado (cache/DB válido): alerta criado inline agora.
+    #   - Processo sendo (re)classificado: os payloads vão junto na task; ela cria
+    #     os alertas ao terminar (respeitando papel != DEVEDOR).
+    novas = 0
     if config.openai_habilitado and processos_vistos:
         chaves = [(pid, proc) for pid, proc in processos_vistos if proc]
         classificacoes = repo.obter_classificacoes_batch(chaves)
@@ -230,53 +290,31 @@ def varrer_oportunidades_task(tenant_id: str | None = None) -> None:
             proc_digits = "".join(c for c in proc if c.isdigit())
             classif = classificacoes.get((pid, proc_digits))
             total_pubs = repo.contar_publicacoes_processo(pid, proc)
+            alertas = alertas_por_proc.get((pid, proc_digits), [])
             if classif and classif["total_pubs"] == total_pubs:
-                continue  # Classificação ainda válida
-            classificar_processo_task.send(tenant_id or "", pid, proc)
+                # Classificação válida → decidir alertas imediatamente
+                if alertas and classif.get("papel") != "DEVEDOR":
+                    novas += _criar_alertas_oportunidade(repo, alertas)
+                continue
+            # Classificação ausente/desatualizada → a task fará classificação + alertas
+            classificar_processo_task.send(tenant_id or "", pid, proc, alertas)
             enfileirados += 1
 
         if enfileirados:
             logger.info(f"varrer_oportunidades_task: {enfileirados} classificação(ões) enfileirada(s)")
+    elif not config.openai_habilitado:
+        # Sem LLM: não há papel para filtrar → criar todos os alertas inline.
+        for alertas in alertas_por_proc.values():
+            novas += _criar_alertas_oportunidade(repo, alertas)
 
-    # Criar alertas para publicações recentes (7 dias). Exceção: na PRIMEIRA varredura
-    # de uma pessoa, alertar o histórico inteiro (sem janela) — assim oportunidades já
-    # existentes ao cadastrar a pessoa geram alerta uma única vez.
-    from datetime import datetime, timedelta
-    cutoff = (datetime.utcnow() - timedelta(days=7)).strftime("%d/%m/%Y")
-    primeira_varredura_ids = set(repo.pessoas_primeira_varredura())
-    oportunidades_recentes = [
-        op for op in oportunidades_amplo
-        if _data_gte(op.get("data_disponibilizacao", ""), cutoff)
-        or op["pessoa_id"] in primeira_varredura_ids
-    ]
+    # Pubs sem numero_processo não têm classificação possível → alertar inline.
+    if alertas_sem_proc:
+        novas += _criar_alertas_oportunidade(repo, alertas_sem_proc)
 
-    classificacoes_atuais = {}
-    if processos_vistos:
-        chaves_todas = [(pid, proc) for pid, proc in processos_vistos if proc]
-        classificacoes_atuais = repo.obter_classificacoes_batch(chaves_todas)
-
-    novas = 0
-    for op in oportunidades_recentes:
-        if repo.alerta_oportunidade_existe(op["id"]):
-            continue
-        # Se já classificado como DEVEDOR, não criar alerta
-        proc = op.get("numero_processo") or ""
-        proc_digits = "".join(c for c in proc if c.isdigit())
-        classif = classificacoes_atuais.get((op["pessoa_id"], proc_digits))
-        if classif and classif.get("papel") == "DEVEDOR":
-            continue
-
-        titulo = f"Oportunidade: {op['padrao_detectado']} | {op['tribunal']}"
-        descricao = f"{op['pessoa_nome']} — {(op.get('texto_resumo') or '')[:300]}"
-        repo.registrar_alerta(
-            pessoa_id=op["pessoa_id"],
-            publicacao_id=op["id"],
-            tipo="OPORTUNIDADE_CREDITO",
-            titulo=titulo,
-            descricao=descricao,
-        )
-        novas += 1
-    logger.info(f"varrer_oportunidades_task: {novas} nova(s) oportunidade(s) detectada(s)")
+    logger.info(
+        f"varrer_oportunidades_task: {novas} nova(s) oportunidade(s) alertada(s) inline "
+        f"(demais serão criadas pela classificação)"
+    )
 
     # Marcar as pessoas cuja primeira varredura acabou de rodar (mesmo as sem candidatos),
     # para que as próximas varreduras voltem a usar a janela de 7 dias.
@@ -293,7 +331,7 @@ def varrer_oportunidades_task(tenant_id: str | None = None) -> None:
 
 
 _CLASSIF_CACHE_TTL = 60 * 60 * 24 * 7  # 7 dias
-_CLASSIF_CACHE_VERSION = "v2"  # v2: prompt papel≠veredicto + janela ao redor do sinal
+_CLASSIF_CACHE_VERSION = "v3"  # v3: structured outputs + valor_numerico
 
 
 def _classif_cache_key(pessoa_id: int, numero_processo: str, total_pubs: int) -> str:
@@ -307,11 +345,20 @@ def _classif_cache_key(pessoa_id: int, numero_processo: str, total_pubs: int) ->
     min_backoff=5_000,
     time_limit=60_000,  # 1 min
 )
-def classificar_processo_task(tenant_id: str, pessoa_id: int, numero_processo: str) -> None:
+def classificar_processo_task(
+    tenant_id: str,
+    pessoa_id: int,
+    numero_processo: str,
+    alertas: "list[dict] | None" = None,
+) -> None:
     """Classifica credor/devedor de um processo via LLM (OpenAI).
 
-    Verifica cache Redis → DB → chama OpenAI se necessário.
-    Salva resultado em DB e Redis.
+    Verifica cache Redis → DB → chama OpenAI se necessário. Salva em DB e Redis.
+
+    Se `alertas` (payloads de OPORTUNIDADE_CREDITO) for passado, cria os alertas ao
+    final — mas SOMENTE se o papel resultante não for DEVEDOR. Isso encadeia a criação
+    do alerta à classificação, evitando notificar oportunidades de processos onde a
+    parte é a devedora.
     """
     import json as _json
 
@@ -329,86 +376,111 @@ def classificar_processo_task(tenant_id: str, pessoa_id: int, numero_processo: s
     total_pubs = len(publicacoes)
     cache_key = _classif_cache_key(pessoa_id, numero_processo, total_pubs)
 
-    # 1. Checar Redis cache
     r = None
     try:
         import redis as _redis
         r = _redis.from_url(config.redis_url, decode_responses=True)
-        cached = r.get(cache_key)
-        if cached:
-            logger.debug(f"classificar_processo_task: cache hit para {cache_key}")
-            return
     except Exception as e:
         logger.warning(f"classificar_processo_task: Redis indisponível: {e}")
 
-    # 2. Checar DB
-    classif_db = repo.obter_classificacao(pessoa_id, numero_processo)
-    if classif_db and classif_db["total_pubs"] == total_pubs:
-        # DB tem classificação válida — popular Redis e retornar
+    # Determinar a classificação vigente: Redis → DB → OpenAI.
+    resultado: dict | None = None
+
+    # 1. Redis cache
+    if r is not None:
+        try:
+            cached = r.get(cache_key)
+            if cached:
+                resultado = _json.loads(cached)
+                logger.debug(f"classificar_processo_task: cache hit para {cache_key}")
+        except Exception as e:
+            logger.warning(f"classificar_processo_task: erro lendo Redis: {e}")
+
+    # 2. DB
+    if resultado is None:
+        classif_db = repo.obter_classificacao(pessoa_id, numero_processo)
+        if classif_db and classif_db["total_pubs"] == total_pubs:
+            resultado = classif_db
+            try:
+                if r:
+                    r.setex(cache_key, _CLASSIF_CACHE_TTL, _json.dumps(classif_db, ensure_ascii=False))
+            except Exception:
+                pass
+            logger.debug(f"classificar_processo_task: DB hit para pessoa={pessoa_id} proc={numero_processo}")
+
+    # 3. OpenAI
+    if resultado is None:
+        pessoa = repo.obter_pessoa(pessoa_id)
+        pessoa_nome = pessoa["nome"] if pessoa else None
+
+        padroes_pos = [
+            p["expressao"] for p in repo.listar_padroes_oportunidade()
+            if p.get("tipo") == "positivo" and p.get("ativo")
+        ]
+
+        from services.classificacao_service import classificar_processo
+        try:
+            resultado = classificar_processo(
+                publicacoes=publicacoes,
+                api_key=config.openai_api_key,
+                modelo=config.openai_model,
+                pessoa_nome=pessoa_nome,
+                numero_processo=numero_processo,
+                max_pubs=config.classif_max_pubs,
+                max_chars=config.classif_max_chars,
+                padroes_positivos=padroes_pos,
+            )
+        except RuntimeError as e:
+            logger.error(f"classificar_processo_task: falha LLM para pessoa={pessoa_id} proc={numero_processo}: {e}")
+            raise
+
+        repo.salvar_classificacao(
+            pessoa_id=pessoa_id,
+            numero_processo=numero_processo,
+            papel=resultado["papel"],
+            veredicto=resultado["veredicto"],
+            valor=resultado["valor"],
+            valor_numerico=resultado.get("valor_numerico"),
+            justificativa=resultado["justificativa"],
+            total_pubs=total_pubs,
+        )
+
         try:
             if r:
-                r.setex(cache_key, _CLASSIF_CACHE_TTL, _json.dumps(classif_db, ensure_ascii=False))
-        except Exception:
-            pass
-        logger.debug(f"classificar_processo_task: DB hit para pessoa={pessoa_id} proc={numero_processo}")
-        return
+                cache_data = {
+                    "pessoa_id": pessoa_id,
+                    "numero_processo": "".join(c for c in numero_processo if c.isdigit()),
+                    "papel": resultado["papel"],
+                    "veredicto": resultado["veredicto"],
+                    "valor": resultado["valor"],
+                    "valor_numerico": resultado.get("valor_numerico"),
+                    "justificativa": resultado["justificativa"],
+                    "total_pubs": total_pubs,
+                }
+                r.setex(cache_key, _CLASSIF_CACHE_TTL, _json.dumps(cache_data, ensure_ascii=False))
+        except Exception as e:
+            logger.warning(f"classificar_processo_task: falha ao salvar Redis: {e}")
 
-    # 3. Chamar OpenAI
-    pessoa = repo.obter_pessoa(pessoa_id)
-    pessoa_nome = pessoa["nome"] if pessoa else None
-
-    padroes_pos = [
-        p["expressao"] for p in repo.listar_padroes_oportunidade()
-        if p.get("tipo") == "positivo" and p.get("ativo")
-    ]
-
-    from services.classificacao_service import classificar_processo
-    try:
-        resultado = classificar_processo(
-            publicacoes=publicacoes,
-            api_key=config.openai_api_key,
-            modelo=config.openai_model,
-            pessoa_nome=pessoa_nome,
-            numero_processo=numero_processo,
-            max_pubs=config.classif_max_pubs,
-            max_chars=config.classif_max_chars,
-            padroes_positivos=padroes_pos,
+        logger.info(
+            f"classificar_processo_task: pessoa={pessoa_id} proc={numero_processo} "
+            f"→ papel={resultado['papel']} veredicto={resultado['veredicto']}"
         )
-    except RuntimeError as e:
-        logger.error(f"classificar_processo_task: falha LLM para pessoa={pessoa_id} proc={numero_processo}: {e}")
-        raise
 
-    # 4. Salvar em DB
-    repo.salvar_classificacao(
-        pessoa_id=pessoa_id,
-        numero_processo=numero_processo,
-        papel=resultado["papel"],
-        veredicto=resultado["veredicto"],
-        valor=resultado["valor"],
-        justificativa=resultado["justificativa"],
-        total_pubs=total_pubs,
-    )
-
-    # 5. Salvar em Redis
-    try:
-        if r:
-            cache_data = {
-                "pessoa_id": pessoa_id,
-                "numero_processo": "".join(c for c in numero_processo if c.isdigit()),
-                "papel": resultado["papel"],
-                "veredicto": resultado["veredicto"],
-                "valor": resultado["valor"],
-                "justificativa": resultado["justificativa"],
-                "total_pubs": total_pubs,
-            }
-            r.setex(cache_key, _CLASSIF_CACHE_TTL, _json.dumps(cache_data, ensure_ascii=False))
-    except Exception as e:
-        logger.warning(f"classificar_processo_task: falha ao salvar Redis: {e}")
-
-    logger.info(
-        f"classificar_processo_task: pessoa={pessoa_id} proc={numero_processo} "
-        f"→ papel={resultado['papel']} veredicto={resultado['veredicto']}"
-    )
+    # Criação de alertas encadeada à classificação (skip DEVEDOR).
+    if alertas:
+        papel = (resultado or {}).get("papel")
+        if papel != "DEVEDOR":
+            n = _criar_alertas_oportunidade(repo, alertas)
+            if n:
+                logger.info(
+                    f"classificar_processo_task: {n} alerta(s) de oportunidade criado(s) "
+                    f"para pessoa={pessoa_id} proc={numero_processo}"
+                )
+        else:
+            logger.info(
+                f"classificar_processo_task: papel=DEVEDOR — {len(alertas)} alerta(s) "
+                f"suprimido(s) para pessoa={pessoa_id} proc={numero_processo}"
+            )
 
 
 # ============================================================

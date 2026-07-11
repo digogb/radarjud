@@ -56,6 +56,7 @@ interface OportunidadeGrupo {
   ia_papel: string | null
   ia_veredicto: string | null
   ia_valor: string | null
+  ia_valor_numerico: number | null
   ia_justificativa: string | null
   // Descarte manual
   descartado_por_usuario: boolean
@@ -80,6 +81,7 @@ function agruparPorProcesso(itens: OportunidadeItem[]): OportunidadeGrupo[] {
         ia_papel: item.ia_papel ?? null,
         ia_veredicto: item.ia_veredicto ?? null,
         ia_valor: item.ia_valor ?? null,
+        ia_valor_numerico: item.ia_valor_numerico ?? null,
         ia_justificativa: item.ia_justificativa ?? null,
         descartado_por_usuario: item.descartado_por_usuario ?? false,
       })
@@ -499,11 +501,12 @@ function ResumoCard({
 // Página principal
 // ---------------------------------------------------------------------------
 
-type Ordenacao = 'data_desc' | 'data_asc' | 'nome' | 'publicacoes'
+type Ordenacao = 'data_desc' | 'data_asc' | 'nome' | 'publicacoes' | 'valor_desc'
 
 const ORDENACOES: { value: Ordenacao; label: string }[] = [
   { value: 'data_desc', label: 'Mais recente' },
   { value: 'data_asc',  label: 'Mais antigo'  },
+  { value: 'valor_desc', label: 'Maior valor' },
   { value: 'nome',      label: 'Nome (A→Z)'   },
   { value: 'publicacoes', label: 'Mais publicações' },
 ]
@@ -521,6 +524,13 @@ function ordenarGrupos(grupos: OportunidadeGrupo[], ord: Ordenacao): Oportunidad
   return [...grupos].sort((a, b) => {
     if (ord === 'data_desc') return dataSortavel(b.data_mais_recente).localeCompare(dataSortavel(a.data_mais_recente))
     if (ord === 'data_asc')  return dataSortavel(a.data_mais_recente).localeCompare(dataSortavel(b.data_mais_recente))
+    if (ord === 'valor_desc') {
+      // Sem valor identificado vai para o fim; empate desempata por data desc.
+      const va = a.ia_valor_numerico ?? -1
+      const vb = b.ia_valor_numerico ?? -1
+      if (vb !== va) return vb - va
+      return dataSortavel(b.data_mais_recente).localeCompare(dataSortavel(a.data_mais_recente))
+    }
     if (ord === 'nome')      return a.pessoa_nome.localeCompare(b.pessoa_nome, 'pt-BR')
     if (ord === 'publicacoes') return b.total - a.total
     return 0

@@ -525,6 +525,7 @@ export interface OportunidadeItem {
     ia_papel?: string | null;           // CREDOR | DEVEDOR | INDEFINIDO
     ia_veredicto?: string | null;       // CREDITO_IDENTIFICADO | CREDITO_POSSIVEL | SEM_CREDITO
     ia_valor?: string | null;           // "R$ X.XXX,XX" ou "não identificado"
+    ia_valor_numerico?: number | null;  // valor como número, p/ ordenação
     ia_justificativa?: string | null;   // 1 frase
     // Descarte manual pelo usuário
     descartado_por_usuario?: boolean;

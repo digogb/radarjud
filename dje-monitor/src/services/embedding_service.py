@@ -550,8 +550,12 @@ def rerank_oportunidades(pub_ids: list, threshold: float = 0.45, tenant_id: "str
     Usa Qdrant para buscar similaridade entre os pub_ids e a query canônica de oportunidade.
     Retorna apenas os IDs cujo score está acima do threshold.
 
-    Em caso de erro (Qdrant indisponível, pub não indexado), retorna todos os candidatos
-    sem filtrar (fail-safe: melhor falso positivo que falso negativo).
+    Em caso de erro (Qdrant indisponível), retorna todos os candidatos sem filtrar
+    (fail-safe: melhor falso positivo que falso negativo).
+
+    Publicações ainda NÃO indexadas no Qdrant (fila de indexação atrasada) não são
+    descartadas: são mantidas com score 0.0, deixando a classificação LLM decidir.
+    Só descartamos o que o Qdrant conhece E pontuou abaixo do threshold.
 
     Returns:
         Dict {pub_id: score} para os aprovados.
@@ -575,6 +579,34 @@ def rerank_oportunidades(pub_ids: list, threshold: float = 0.45, tenant_id: "str
         )
 
         scores = {r.id: round(r.score, 4) for r in results.points}
+
+        # Distinguir "pontuado abaixo do threshold" (descartar) de "não indexado
+        # ainda" (manter). Buscamos os ids ausentes: os que o Qdrant NÃO conhece
+        # entram com score 0.0 (fail-safe); os conhecidos ausentes ficaram abaixo
+        # do threshold e são descartados.
+        ausentes = [pid for pid in pub_ids if pid not in scores]
+        if ausentes:
+            try:
+                conhecidos = {
+                    p.id for p in client.retrieve(
+                        collection_name=collection,
+                        ids=list(ausentes),
+                        with_payload=False,
+                        with_vectors=False,
+                    )
+                }
+            except Exception as e:
+                logger.warning(f"rerank_oportunidades: retrieve de ausentes falhou, mantendo-os. {e}")
+                conhecidos = set()  # na dúvida, tratar todos como não-indexados
+            nao_indexados = [pid for pid in ausentes if pid not in conhecidos]
+            for pid in nao_indexados:
+                scores[pid] = 0.0
+            if nao_indexados:
+                logger.info(
+                    f"rerank_oportunidades: {len(nao_indexados)} pub(s) ainda não indexada(s) "
+                    f"no Qdrant — mantidas sem descarte (score=0.0)"
+                )
+
         all_scores = list(scores.values())
         _log_score_stats(f"rerank_oportunidades ({len(pub_ids)} candidatos)", all_scores, threshold)
         return scores

@@ -1021,7 +1021,11 @@ class DiarioRepository:
                     PublicacaoMonitorada.criado_em >= since,
                     or_(*filtros_pos),
                 )
-                .order_by(PublicacaoMonitorada.data_disponibilizacao.desc())
+                # Ordenar por criado_em (timestamp real de coleta). NÃO usar
+                # data_disponibilizacao aqui: é string 'dd/mm/yyyy' e ordenaria
+                # lexicograficamente (31/01 > 01/12), cortando pelo LIMIT as
+                # oportunidades genuinamente mais recentes.
+                .order_by(PublicacaoMonitorada.criado_em.desc())
                 .limit(limit)
                 .all()
             )
@@ -1035,9 +1039,22 @@ class DiarioRepository:
                         padrao_nome = p.nome
                         break
 
-                # Filtro intra-publicação: pular se o mesmo texto contém padrão negativo
-                if padroes_neg and any(pn.expressao.lower() in texto for pn in padroes_neg):
-                    continue
+                # Filtro intra-publicação: pular se o mesmo texto contém padrão
+                # negativo — a menos que haja um padrão POSITIVO mais específico
+                # (expressão mais longa) presente. Ex.: "extinção da execução pelo
+                # pagamento" (positivo) vence "revogação" (negativo).
+                if padroes_neg:
+                    neg_match = max(
+                        (pn.expressao for pn in padroes_neg if pn.expressao.lower() in texto),
+                        key=len, default=None,
+                    )
+                    if neg_match:
+                        pos_match = max(
+                            (p.expressao for p in padroes_pos if p.expressao.lower() in texto),
+                            key=len, default=None,
+                        )
+                        if not pos_match or len(pos_match) <= len(neg_match):
+                            continue
 
                 # Filtro de polo: pular se pessoa está exclusivamente no polo passivo
                 polo_pessoa = "indefinido"
@@ -1160,16 +1177,22 @@ class DiarioRepository:
         ("Acordo Homologado",        "acordo homologado"),
         ("Desbloqueio",              "desbloqueio"),
         ("Ordem de Pagamento",       "ordem de pagamento"),
+        # Extinção por pagamento (art. 924, II CPC): sinal máximo de crédito recebido.
+        ("Extinção pelo Pagamento",  "extinção da execução pelo pagamento"),
+        ("Extinção pelo Pagamento",  "extinta a execução pelo pagamento"),
     ]
 
+    # Negativos específicos: expressões que de fato encerram SEM crédito.
+    # Evitamos termos genéricos ("extinção", "suspensão", "rescisão") que casavam
+    # com sinais positivos ("extinção pelo pagamento", "suspensão por acordo") ou
+    # com substrings irrelevantes ("ação rescisória").
     _PADROES_PADRAO_NEGATIVOS = [
-        ("Anulação",    "anulação"),
-        ("Cassação",    "cassação"),
-        ("Suspensão",   "suspensão"),
-        ("Revogação",   "revogação"),
-        ("Reforma",     "reformado"),
-        ("Rescisão",    "rescisão"),
-        ("Extinção",    "extinção"),
+        ("Anulação",           "anulação"),
+        ("Cassação",           "cassação"),
+        ("Revogação",          "revogação"),
+        ("Reforma",            "reformado"),
+        ("Extinção sem mérito", "extinção sem resolução"),
+        ("Improcedência",      "improcedência"),
     ]
 
     def seed_padroes_oportunidade(self) -> None:
@@ -1301,6 +1324,7 @@ class DiarioRepository:
         valor: str | None,
         justificativa: str | None,
         total_pubs: int,
+        valor_numerico: "float | None" = None,
     ) -> dict:
         """Upsert de classificação de processo. Atualiza se já existir."""
         digits = "".join(c for c in numero_processo if c.isdigit())
@@ -1317,6 +1341,7 @@ class DiarioRepository:
                 classif.papel = papel
                 classif.veredicto = veredicto
                 classif.valor = valor
+                classif.valor_numerico = valor_numerico
                 classif.justificativa = justificativa
                 classif.total_pubs = total_pubs
                 classif.atualizado_em = datetime.utcnow()
@@ -1328,6 +1353,7 @@ class DiarioRepository:
                     papel=papel,
                     veredicto=veredicto,
                     valor=valor,
+                    valor_numerico=valor_numerico,
                     justificativa=justificativa,
                     total_pubs=total_pubs,
                 )
@@ -1340,6 +1366,7 @@ class DiarioRepository:
                 "papel": classif.papel,
                 "veredicto": classif.veredicto,
                 "valor": classif.valor,
+                "valor_numerico": float(classif.valor_numerico) if classif.valor_numerico is not None else None,
                 "justificativa": classif.justificativa,
                 "total_pubs": classif.total_pubs,
             }
@@ -1366,6 +1393,7 @@ class DiarioRepository:
                 "papel": classif.papel,
                 "veredicto": classif.veredicto,
                 "valor": classif.valor,
+                "valor_numerico": float(classif.valor_numerico) if classif.valor_numerico is not None else None,
                 "justificativa": classif.justificativa,
                 "total_pubs": classif.total_pubs,
             }
@@ -1406,6 +1434,7 @@ class DiarioRepository:
                     "papel": c.papel,
                     "veredicto": c.veredicto,
                     "valor": c.valor,
+                    "valor_numerico": float(c.valor_numerico) if c.valor_numerico is not None else None,
                     "justificativa": c.justificativa,
                     "total_pubs": c.total_pubs,
                 }

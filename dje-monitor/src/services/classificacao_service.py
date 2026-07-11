@@ -36,16 +36,37 @@ Dadas publicações do DJe sobre um processo, determine DUAS coisas de forma IND
    favor (ex.: art. 523, cumprimento de sentença movido por ela), classifique no MÍNIMO
    como CREDITO_POSSIVEL — não use SEM_CREDITO nesse caso.
 
-Responda APENAS neste formato (sem explicação adicional):
-PAPEL: [CREDOR | DEVEDOR | INDEFINIDO]
-VEREDICTO: [CREDITO_IDENTIFICADO | CREDITO_POSSIVEL | SEM_CREDITO]
-VALOR: [valor em reais ou "não identificado"]
-JUSTIFICATIVA: [1 frase curta]\
+3. VALOR — o valor em reais a receber, quando houver menção explícita:
+   - "valor": texto como aparece (ex.: "R$ 15.000,00") ou "não identificado".
+   - "valor_numerico": o MESMO valor como número decimal (ex.: 15000.00), ou null se
+     não identificado. Use ponto como separador decimal, sem separador de milhar.\
 """
 
 _MAX_CHARS_POR_PUB = 2000
 _MAX_PUBS = 5
 
+# Schema para structured outputs (elimina erros de parsing e já entrega valor_numerico).
+_RESPONSE_SCHEMA = {
+    "name": "classificacao_processo",
+    "strict": True,
+    "schema": {
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {
+            "papel": {"type": "string", "enum": ["CREDOR", "DEVEDOR", "INDEFINIDO"]},
+            "veredicto": {
+                "type": "string",
+                "enum": ["CREDITO_IDENTIFICADO", "CREDITO_POSSIVEL", "SEM_CREDITO"],
+            },
+            "valor": {"type": "string"},
+            "valor_numerico": {"type": ["number", "null"]},
+            "justificativa": {"type": "string"},
+        },
+        "required": ["papel", "veredicto", "valor", "valor_numerico", "justificativa"],
+    },
+}
+
+# Fallback regex (usado só se a resposta não vier como JSON válido).
 _RE_PAPEL = re.compile(r"PAPEL:\s*(CREDOR|DEVEDOR|INDEFINIDO)", re.IGNORECASE)
 _RE_VEREDICTO = re.compile(
     r"VEREDICTO:\s*(CREDITO_IDENTIFICADO|CREDITO_POSSIVEL|SEM_CREDITO)",
@@ -53,6 +74,23 @@ _RE_VEREDICTO = re.compile(
 )
 _RE_VALOR = re.compile(r"VALOR:\s*(.+)", re.IGNORECASE)
 _RE_JUSTIFICATIVA = re.compile(r"JUSTIFICATIVA:\s*(.+)", re.IGNORECASE)
+
+
+def _parse_valor_brl(texto: "str | None") -> "float | None":
+    """Extrai o primeiro valor monetário pt-BR de um texto como float.
+
+    'R$ 1.234.567,89' → 1234567.89 · 'R$ 800' → 800.0 · 'não identificado' → None
+    """
+    if not texto:
+        return None
+    m = re.search(r"(\d{1,3}(?:\.\d{3})+(?:,\d{1,2})?|\d+(?:,\d{1,2})?)", texto)
+    if not m:
+        return None
+    s = m.group(1).replace(".", "").replace(",", ".")
+    try:
+        return float(s)
+    except ValueError:
+        return None
 
 
 def _extrair_partes(publicacoes: list[dict]) -> dict[str, list[str]]:
@@ -144,6 +182,7 @@ def classificar_processo(
             "papel": "INDEFINIDO",
             "veredicto": None,
             "valor": None,
+            "valor_numerico": None,
             "justificativa": "Nenhuma publicação encontrada.",
         }
 
@@ -186,17 +225,30 @@ def classificar_processo(
 
     conteudo = "\n".join(linhas)
 
+    messages = [
+        {"role": "system", "content": _SISTEMA},
+        {"role": "user", "content": conteudo},
+    ]
+
     try:
         client = OpenAI(api_key=api_key)
-        response = client.chat.completions.create(
-            model=modelo,
-            messages=[
-                {"role": "system", "content": _SISTEMA},
-                {"role": "user", "content": conteudo},
-            ],
-            temperature=0.1,
-            max_tokens=200,
-        )
+        try:
+            response = client.chat.completions.create(
+                model=modelo,
+                messages=messages,
+                temperature=0.1,
+                max_tokens=250,
+                response_format={"type": "json_schema", "json_schema": _RESPONSE_SCHEMA},
+            )
+        except Exception as e:
+            # Fallback: modelo/endpoint sem suporte a structured outputs → texto simples.
+            logger.warning(f"classificar_processo: structured output indisponível ({e}); usando texto.")
+            response = client.chat.completions.create(
+                model=modelo,
+                messages=messages,
+                temperature=0.1,
+                max_tokens=250,
+            )
         texto_resp = response.choices[0].message.content or ""
 
         # Log de tokens para monitoramento de custo
@@ -215,14 +267,35 @@ def classificar_processo(
 
 
 def _parsear_resposta(texto: str) -> dict:
-    """Parseia a resposta estruturada da LLM."""
+    """Parseia a resposta da LLM. Tenta JSON (structured output); cai para regex."""
     result = {
         "papel": "INDEFINIDO",
         "veredicto": None,
         "valor": None,
+        "valor_numerico": None,
         "justificativa": None,
     }
 
+    # Caminho principal: JSON (structured outputs).
+    try:
+        data = json.loads(texto)
+        if isinstance(data, dict):
+            papel = (data.get("papel") or "INDEFINIDO")
+            result["papel"] = str(papel).upper()
+            ver = data.get("veredicto")
+            result["veredicto"] = str(ver).upper() if ver else None
+            result["valor"] = data.get("valor")
+            vn = data.get("valor_numerico")
+            result["valor_numerico"] = (
+                float(vn) if isinstance(vn, (int, float))
+                else _parse_valor_brl(result["valor"])
+            )
+            result["justificativa"] = data.get("justificativa")
+            return result
+    except (ValueError, TypeError):
+        pass
+
+    # Fallback: formato texto legado (PAPEL:/VEREDICTO:/...).
     m = _RE_PAPEL.search(texto)
     if m:
         result["papel"] = m.group(1).upper()
@@ -239,4 +312,5 @@ def _parsear_resposta(texto: str) -> dict:
     if m:
         result["justificativa"] = m.group(1).strip()
 
+    result["valor_numerico"] = _parse_valor_brl(result["valor"])
     return result

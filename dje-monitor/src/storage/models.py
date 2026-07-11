@@ -18,6 +18,7 @@ from sqlalchemy import (
     ForeignKey,
     Integer,
     JSON,
+    Numeric,
     String,
     Text,
     UniqueConstraint,
@@ -258,6 +259,7 @@ class ClassificacaoProcesso(Base):
     papel = Column(String(20))              # CREDOR | DEVEDOR | INDEFINIDO
     veredicto = Column(String(30))          # CREDITO_IDENTIFICADO | CREDITO_POSSIVEL | SEM_CREDITO
     valor = Column(String(100))             # "R$ 50.000,00" ou "não identificado"
+    valor_numerico = Column(Numeric(15, 2), nullable=True)  # valor como número, p/ ordenação
     justificativa = Column(String(500))     # 1 frase explicando a classificação
     total_pubs = Column(Integer, nullable=False)  # para invalidação automática
     criado_em = Column(DateTime, default=datetime.utcnow)

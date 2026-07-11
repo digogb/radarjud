@@ -725,11 +725,13 @@ def buscar_oportunidades(
                 item["ia_papel"] = classif["papel"]
                 item["ia_veredicto"] = classif["veredicto"]
                 item["ia_valor"] = classif["valor"]
+                item["ia_valor_numerico"] = classif.get("valor_numerico")
                 item["ia_justificativa"] = classif["justificativa"]
             else:
                 item["ia_papel"] = None
                 item["ia_veredicto"] = None
                 item["ia_valor"] = None
+                item["ia_valor_numerico"] = None
                 item["ia_justificativa"] = None
             item["descartado_por_usuario"] = (item["pessoa_id"], proc_digits) in descartadas
 
