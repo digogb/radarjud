@@ -43,6 +43,19 @@ VALOR: [valor em reais ou "não identificado"]
 NÃO inclua título com o número do processo. Responda em português.\
 """
 
+def _modelo_novo(modelo: str) -> bool:
+    """True para modelos GPT-5 / o-series (API nova)."""
+    m = (modelo or "").lower()
+    return m.startswith(("gpt-5", "o1", "o3", "o4"))
+
+
+def _chat_params(modelo: str, max_out: int) -> dict:
+    """Params compatíveis: GPT-5/o-series usam max_completion_tokens e temperature padrão."""
+    if _modelo_novo(modelo):
+        return {"max_completion_tokens": max(max_out, 3000)}
+    return {"max_tokens": max_out, "temperature": 0.2}
+
+
 # Limite de caracteres por publicação
 _MAX_CHARS_POR_PUB = 1500
 # Limite total de caracteres das publicações enviados ao modelo
@@ -185,8 +198,7 @@ def gerar_resumo_processo(
                 {"role": "system", "content": _SISTEMA},
                 {"role": "user", "content": conteudo_usuario},
             ],
-            temperature=0.2,
-            max_tokens=1400,
+            **_chat_params(modelo, 1400),
         )
         texto_completo = response.choices[0].message.content or ""
         resumo_limpo, meta = _parsear_metadata(texto_completo)

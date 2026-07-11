@@ -844,7 +844,7 @@ class ResumoProcessoRequest(BaseModel):
 _RESUMO_CACHE_TTL = 60 * 60 * 24 * 7  # 7 dias
 
 
-_RESUMO_CACHE_VERSION = "v3"  # v3: prompt neutro (sem viés devedor)
+_RESUMO_CACHE_VERSION = "v4"  # v4: modelo GPT-5 (params novos)
 
 
 def _resumo_cache_key(pessoa_id: int, numero_processo: str, total_pubs: int) -> str:

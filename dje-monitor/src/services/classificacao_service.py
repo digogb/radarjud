@@ -15,6 +15,9 @@ logger = logging.getLogger(__name__)
 _SISTEMA = """\
 Você é um analista jurídico especializado em execuções judiciais brasileiras.
 
+Sua análise é SEMPRE do ponto de vista da PARTE MONITORADA. O que importa é se ELA,
+especificamente, tem valores a receber — não se existe algum valor no processo.
+
 Dadas publicações do DJe sobre um processo, determine DUAS coisas de forma INDEPENDENTE:
 
 1. PAPEL — deriva APENAS da posição processual da parte monitorada, NÃO da existência de crédito:
@@ -25,25 +28,51 @@ Dadas publicações do DJe sobre um processo, determine DUAS coisas de forma IND
    - INDEFINIDO: quando a posição não puder ser determinada pelas publicações.
    REGRA: nunca classifique como DEVEDOR só porque não há sinal de crédito. Ausência de
    crédito NÃO torna a parte devedora — se ela é autora/exequente, o papel é CREDOR.
+   JUSTIÇA DO TRABALHO: a reclamada/empregadora é DEVEDORA (paga as verbas); o reclamante/
+   empregado é CREDOR. Empregadora que recorre ou agrava para evitar/reduzir o pagamento
+   continua DEVEDORA — recorrer não a torna credora.
 
-2. VEREDICTO — indica se há crédito concreto a receber:
+2. VEREDICTO — indica se há crédito concreto A RECEBER PELA PARTE MONITORADA:
    - CREDITO_IDENTIFICADO: há alvará/mandado de levantamento, precatório, RPV ou valor
-     líquido em favor da parte.
+     líquido EM FAVOR DA PARTE MONITORADA.
    - CREDITO_POSSIVEL: a parte está no polo credor (exequente/autora de cobrança) e há
      indício de recebimento futuro, mas sem valor/levantamento já formalizado.
-   - SEM_CREDITO: parte devedora, ou nenhum indício de recebimento.
+   - SEM_CREDITO: parte devedora, ou nenhum indício de recebimento pela parte monitorada.
    REGRA: se a parte é CREDOR e há qualquer sinal de levantamento/pagamento/execução em seu
    favor (ex.: art. 523, cumprimento de sentença movido por ela), classifique no MÍNIMO
    como CREDITO_POSSIVEL — não use SEM_CREDITO nesse caso.
+   CRÉDITO DE TERCEIRO NÃO CONTA: um valor só é crédito da parte monitorada se for EM FAVOR
+   DELA. Honorários advocatícios (sucumbenciais/contratuais) são crédito do ADVOGADO, não
+   da parte — ignore-os. Valores em favor da parte contrária ou de terceiros também não são
+   crédito da parte monitorada → nesses casos, SEM_CREDITO.
+   NÃO infira CREDOR só porque há um valor no texto: identifique EM FAVOR DE QUEM ele é.
 
-3. VALOR — o valor em reais a receber, quando houver menção explícita:
+3. VALOR — o valor em reais A RECEBER PELA PARTE MONITORADA, com menção explícita e em favor dela:
    - "valor": texto como aparece (ex.: "R$ 15.000,00") ou "não identificado".
-   - "valor_numerico": o MESMO valor como número decimal (ex.: 15000.00), ou null se
-     não identificado. Use ponto como separador decimal, sem separador de milhar.\
+   - "valor_numerico": o MESMO valor como número decimal (ex.: 15000.00), ou null se não
+     identificado OU se o valor não for da parte monitorada. Ponto decimal, sem milhar.\
 """
 
 _MAX_CHARS_POR_PUB = 2000
 _MAX_PUBS = 5
+
+
+def _modelo_novo(modelo: str) -> bool:
+    """True para modelos GPT-5 / o-series (API nova)."""
+    m = (modelo or "").lower()
+    return m.startswith(("gpt-5", "o1", "o3", "o4"))
+
+
+def _chat_params(modelo: str, max_out: int) -> dict:
+    """Parâmetros de tokens/temperatura compatíveis com o modelo.
+
+    GPT-5/o-series: exigem `max_completion_tokens` e só aceitam temperature padrão (1);
+    reservamos folga de tokens para o raciocínio interno. Modelos antigos (4o/4.1):
+    `max_tokens` + temperature baixa para respostas determinísticas.
+    """
+    if _modelo_novo(modelo):
+        return {"max_completion_tokens": max(max_out, 2000)}
+    return {"max_tokens": max_out, "temperature": 0.1}
 
 # Schema para structured outputs (elimina erros de parsing e já entrega valor_numerico).
 _RESPONSE_SCHEMA = {
@@ -236,9 +265,8 @@ def classificar_processo(
             response = client.chat.completions.create(
                 model=modelo,
                 messages=messages,
-                temperature=0.1,
-                max_tokens=250,
                 response_format={"type": "json_schema", "json_schema": _RESPONSE_SCHEMA},
+                **_chat_params(modelo, 250),
             )
         except Exception as e:
             # Fallback: modelo/endpoint sem suporte a structured outputs → texto simples.
@@ -246,8 +274,7 @@ def classificar_processo(
             response = client.chat.completions.create(
                 model=modelo,
                 messages=messages,
-                temperature=0.1,
-                max_tokens=250,
+                **_chat_params(modelo, 250),
             )
         texto_resp = response.choices[0].message.content or ""
 
