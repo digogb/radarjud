@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
 import { createPortal } from 'react-dom'
 import ReactMarkdown from 'react-markdown'
-import { TrendingUp, Search, ExternalLink, FileText, AlertTriangle, Loader2, Clock, X, Calendar, ChevronDown, ChevronUp, Sparkles, UserX, RotateCcw } from 'lucide-react'
+import { TrendingUp, Search, ExternalLink, FileText, AlertTriangle, Loader2, Clock, X, Calendar, ChevronDown, ChevronUp, Sparkles, UserX, RotateCcw, Eye } from 'lucide-react'
 import api, { oportunidadesApi, OportunidadeItem } from '../services/api'
 
 const PADROES_LABEL: Record<string, string> = {
@@ -544,7 +544,7 @@ export default function Oportunidades() {
   const [filtroNome, setFiltroNome] = useState('')
   const [filtroProcesso, setFiltroProcesso] = useState('')
   const [ordenacao, setOrdenacao] = useState<Ordenacao>('data_desc')
-  const [abaAtiva, setAbaAtiva] = useState<'oportunidades' | 'descartados' | 'descartados_usuario'>('oportunidades')
+  const [abaAtiva, setAbaAtiva] = useState<'oportunidades' | 'acompanhar' | 'descartados' | 'descartados_usuario'>('oportunidades')
   const scrollPosRef = useRef(0)
 
   const todosGrupos = agruparPorProcesso(itens).filter(g => {
@@ -555,21 +555,28 @@ export default function Oportunidades() {
     return true
   })
 
-  // Três categorias: descartado pelo usuário > descartado pela IA > oportunidade
+  // Categorias (ordem importa): descartado pelo usuário > acompanhar > descartado pela IA > oportunidade
   const isDescartadoUsuario = (g: OportunidadeGrupo) => g.descartado_por_usuario === true
+  // Acompanhar: credor sem sinal de crédito agora — está do lado certo, pode esquentar depois
+  const isAcompanhar = (g: OportunidadeGrupo) =>
+    !isDescartadoUsuario(g) && g.ia_papel === 'CREDOR' && g.ia_veredicto === 'SEM_CREDITO'
+  // Descartado pela IA: devedor ou não-credor sem crédito
   const isDescartadoIA = (g: OportunidadeGrupo) =>
-    !isDescartadoUsuario(g) && (g.ia_papel === 'DEVEDOR' || g.ia_veredicto === 'SEM_CREDITO')
+    !isDescartadoUsuario(g) && !isAcompanhar(g) && (g.ia_papel === 'DEVEDOR' || g.ia_veredicto === 'SEM_CREDITO')
 
-  const gruposOportunidades = todosGrupos.filter(g => !isDescartadoUsuario(g) && !isDescartadoIA(g))
-  const gruposDescartados = todosGrupos.filter(g => isDescartadoIA(g))
-  const gruposDescartadosUsuario = todosGrupos.filter(g => isDescartadoUsuario(g))
+  const gruposOportunidades = todosGrupos.filter(g => !isDescartadoUsuario(g) && !isAcompanhar(g) && !isDescartadoIA(g))
+  const gruposAcompanhar = todosGrupos.filter(isAcompanhar)
+  const gruposDescartados = todosGrupos.filter(isDescartadoIA)
+  const gruposDescartadosUsuario = todosGrupos.filter(isDescartadoUsuario)
 
   const grupos = ordenarGrupos(
     abaAtiva === 'oportunidades'
       ? gruposOportunidades
-      : abaAtiva === 'descartados'
-        ? gruposDescartados
-        : gruposDescartadosUsuario,
+      : abaAtiva === 'acompanhar'
+        ? gruposAcompanhar
+        : abaAtiva === 'descartados'
+          ? gruposDescartados
+          : gruposDescartadosUsuario,
     ordenacao
   )
 
@@ -825,6 +832,38 @@ export default function Oportunidades() {
             </span>
           </button>
           <button
+            onClick={() => setAbaAtiva('acompanhar')}
+            style={{
+              padding: '10px 20px',
+              fontSize: '0.9rem',
+              fontWeight: abaAtiva === 'acompanhar' ? 700 : 500,
+              color: abaAtiva === 'acompanhar' ? 'var(--info, #2563eb)' : 'var(--text-muted)',
+              background: 'transparent',
+              border: 'none',
+              borderBottom: abaAtiva === 'acompanhar' ? '2px solid var(--info, #2563eb)' : '2px solid transparent',
+              marginBottom: -2,
+              cursor: 'pointer',
+              display: 'flex',
+              alignItems: 'center',
+              gap: 8,
+            }}
+          >
+            <Eye size={16} />
+            Acompanhar
+            {gruposAcompanhar.length > 0 && (
+              <span style={{
+                background: abaAtiva === 'acompanhar' ? 'var(--info-muted, #dbeafe)' : 'var(--glass-border)',
+                color: abaAtiva === 'acompanhar' ? 'var(--info, #2563eb)' : 'var(--text-muted)',
+                borderRadius: 10,
+                padding: '1px 8px',
+                fontSize: '0.75rem',
+                fontWeight: 700,
+              }}>
+                {gruposAcompanhar.length}
+              </span>
+            )}
+          </button>
+          <button
             onClick={() => setAbaAtiva('descartados')}
             style={{
               padding: '10px 20px',
@@ -904,7 +943,15 @@ export default function Oportunidades() {
               <AlertTriangle size={40} style={{ marginBottom: 16, opacity: 0.3 }} />
               <p style={{ fontSize: '1.1rem', marginBottom: 8 }}>Nenhum processo descartado pela IA</p>
               <p style={{ fontSize: '0.9rem', opacity: 0.7 }}>
-                Processos classificados como "Devedor" ou "Sem Crédito" aparecerão aqui.
+                Processos classificados como "Devedor" aparecerão aqui.
+              </p>
+            </>
+          ) : abaAtiva === 'acompanhar' ? (
+            <>
+              <Eye size={40} style={{ marginBottom: 16, opacity: 0.3 }} />
+              <p style={{ fontSize: '1.1rem', marginBottom: 8 }}>Nenhum credor em acompanhamento</p>
+              <p style={{ fontSize: '0.9rem', opacity: 0.7 }}>
+                Processos em que a parte é credora mas ainda sem sinal de recebimento aparecerão aqui.
               </p>
             </>
           ) : abaAtiva === 'descartados_usuario' ? (
