@@ -1511,6 +1511,62 @@ class DiarioRepository:
             )
             return {(d.pessoa_id, d.numero_processo) for d in descartadas}
 
+    @staticmethod
+    def _bucket_classificacao(papel: "str | None", veredicto: "str | None") -> str:
+        """Deriva a aba de uma oportunidade a partir da classificação IA.
+
+        Mesma lógica do frontend (Oportunidades.tsx). Sem classificação → 'oportunidades'
+        (fica visível enquanto a IA não roda).
+        """
+        if papel == "CREDOR" and veredicto == "SEM_CREDITO":
+            return "acompanhar"
+        if papel == "DEVEDOR" or veredicto == "SEM_CREDITO":
+            return "descartados_ia"
+        return "oportunidades"
+
+    def metricas_descartes(self) -> dict:
+        """Precisão percebida: taxa de descarte manual por aba.
+
+        Para cada processo classificado, deriva a aba (via papel/veredicto) e verifica
+        se o usuário o descartou. taxa = descartados / (total da aba). Uma taxa alta em
+        'oportunidades' indica que a IA está colocando lixo ali (baixa precisão).
+        """
+        with self.get_session() as session:
+            classifs = session.query(
+                ClassificacaoProcesso.pessoa_id,
+                ClassificacaoProcesso.numero_processo,
+                ClassificacaoProcesso.papel,
+                ClassificacaoProcesso.veredicto,
+            ).all()
+            descartadas = {
+                (d.pessoa_id, d.numero_processo)
+                for d in session.query(
+                    OportunidadeDescartada.pessoa_id,
+                    OportunidadeDescartada.numero_processo,
+                ).all()
+            }
+
+        buckets = {"oportunidades": {"total": 0, "descartados": 0},
+                   "acompanhar": {"total": 0, "descartados": 0},
+                   "descartados_ia": {"total": 0, "descartados": 0}}
+        for c in classifs:
+            bucket = self._bucket_classificacao(c.papel, c.veredicto)
+            buckets[bucket]["total"] += 1
+            if (c.pessoa_id, c.numero_processo) in descartadas:
+                buckets[bucket]["descartados"] += 1
+
+        for b in buckets.values():
+            b["taxa_descarte"] = round(b["descartados"] / b["total"], 3) if b["total"] else 0.0
+
+        total = sum(b["total"] for b in buckets.values())
+        total_desc = sum(b["descartados"] for b in buckets.values())
+        return {
+            "por_aba": buckets,
+            "total_classificados": total,
+            "total_descartados": total_desc,
+            "taxa_descarte_geral": round(total_desc / total, 3) if total else 0.0,
+        }
+
     def contar_publicacoes_processo(self, pessoa_id: int, numero_processo: str) -> int:
         """Conta publicações de um processo para uma pessoa (para invalidação de cache)."""
         from sqlalchemy import func as sa_func

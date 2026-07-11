@@ -811,6 +811,15 @@ def restaurar_oportunidade(body: DescartarOportunidadeRequest, user: CurrentUser
     return {"status": "restaurado"}
 
 
+@app.get("/api/v1/oportunidades/metricas")
+def metricas_oportunidades(user: CurrentUser = Depends(require_permission(Permission.TENANT_SETTINGS))):
+    """Precisão percebida: taxa de descarte manual por aba (feedback loop).
+
+    Taxa alta em 'oportunidades' sugere que a IA está colocando falsos positivos ali.
+    """
+    return repo.metricas_descartes()
+
+
 @app.post("/api/v1/oportunidades/varrer")
 def varrer_oportunidades(request: Request, user: CurrentUser = Depends(require_permission(Permission.TENANT_SETTINGS))):
     """Dispara varredura imediata de oportunidades de crédito."""
