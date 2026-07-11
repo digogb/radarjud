@@ -331,7 +331,7 @@ def varrer_oportunidades_task(tenant_id: str | None = None) -> None:
 
 
 _CLASSIF_CACHE_TTL = 60 * 60 * 24 * 7  # 7 dias
-_CLASSIF_CACHE_VERSION = "v5"  # v5: papel pela substância (agravante/desconsideração PJ = devedor)
+_CLASSIF_CACHE_VERSION = "v6"  # v6: janela inclui cabeçalho/ementa (tipo de ação) + sinal
 
 
 def _classif_cache_key(pessoa_id: int, numero_processo: str, total_pubs: int) -> str:

@@ -156,10 +156,13 @@ def _tem_padrao(pub: dict, padroes: list[str]) -> bool:
 
 
 def _extrair_janela(texto: str, padroes: list[str], max_chars: int) -> str:
-    """Retorna um trecho de ~max_chars centrado no primeiro padrão positivo.
+    """Retorna um trecho de ~max_chars com o CABEÇALHO + a janela do sinal positivo.
 
-    Garante que o sinal que disparou a oportunidade (ex.: "alvará de levantamento")
-    entre no contexto enviado à IA, em vez de cortar sempre o início do texto.
+    O início da publicação (cabeçalho/ementa) identifica o tipo de ação e as partes
+    — ex.: "APELAÇÃO CÍVEL EM EMBARGOS À EXECUÇÃO" —, essencial para determinar o PAPEL.
+    Já o sinal positivo (ex.: "ordem de pagamento"), que pode estar no meio do texto,
+    é a evidência de crédito. Incluímos SEMPRE o cabeçalho e, quando o sinal está longe
+    dele, também a janela ao redor do sinal — para não perder nenhum dos dois.
     Sem match, devolve o começo do texto.
     """
     if not texto:
@@ -173,12 +176,25 @@ def _extrair_janela(texto: str, padroes: list[str], max_chars: int) -> str:
         if idx != -1 and (pos == -1 or idx < pos):
             pos = idx
     if pos == -1:
-        return texto[:max_chars]
-    antes = min(300, max_chars // 4)
-    inicio = max(0, pos - antes)
-    fim = min(len(texto), inicio + max_chars)
-    trecho = texto[inicio:fim]
-    return ("…" if inicio > 0 else "") + trecho + ("…" if fim < len(texto) else "")
+        return texto[:max_chars] + "…"
+
+    # Cabeçalho (tipo de ação/partes) — reserva ~1/3 do orçamento de chars.
+    cabecalho = min(900, max_chars // 3)
+    # Se o sinal está dentro (ou logo após) o cabeçalho, um trecho contíguo cobre tudo.
+    if pos < cabecalho + 200:
+        return texto[:max_chars] + "…"
+
+    # Caso contrário: cabeçalho + janela ao redor do sinal (mais adiante no texto).
+    resto = max_chars - cabecalho
+    antes = min(300, resto // 4)
+    inicio = max(cabecalho, pos - antes)
+    fim = min(len(texto), inicio + resto)
+    return (
+        texto[:cabecalho]
+        + " […] "
+        + texto[inicio:fim]
+        + ("…" if fim < len(texto) else "")
+    )
 
 
 def classificar_processo(
