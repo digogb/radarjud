@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback, useRef } from 'react'
 import { createPortal } from 'react-dom'
 import ReactMarkdown from 'react-markdown'
 import { TrendingUp, Search, ExternalLink, FileText, AlertTriangle, Loader2, Clock, X, Calendar, ChevronDown, ChevronUp, Sparkles, UserX, RotateCcw, Eye } from 'lucide-react'
-import api, { oportunidadesApi, OportunidadeItem } from '../services/api'
+import { oportunidadesApi, OportunidadeItem } from '../services/api'
 
 const PADROES_LABEL: Record<string, string> = {
   'mandado de levantamento': 'Mandado de Levantamento',
@@ -45,7 +45,8 @@ interface OportunidadeGrupo {
   key: string
   pessoa_id: number
   pessoa_nome: string
-  tribunal: string
+  tribunal: string        // tribunal da publicação mais recente (p/ abrir processo)
+  tribunais: string[]     // todos os tribunais onde o processo tem publicações
   numero_processo: string | null
   padroes: string[]
   polo_pessoa: string
@@ -65,13 +66,18 @@ interface OportunidadeGrupo {
 function agruparPorProcesso(itens: OportunidadeItem[]): OportunidadeGrupo[] {
   const mapa = new Map<string, OportunidadeGrupo>()
   for (const item of itens) {
-    const key = `${item.pessoa_id}__${item.numero_processo ?? ''}__${item.tribunal}`
+    // Agrupa por pessoa + número do processo (o número CNJ é único nacionalmente,
+    // então o mesmo processo em tribunais diferentes — ex.: TRT21 → TST — é UM só).
+    // Publicações sem número caem em grupos separados por tribunal (não há como unir).
+    const proc = item.numero_processo ?? ''
+    const key = proc ? `${item.pessoa_id}__${proc}` : `${item.pessoa_id}____${item.tribunal}`
     if (!mapa.has(key)) {
       mapa.set(key, {
         key,
         pessoa_id: item.pessoa_id,
         pessoa_nome: item.pessoa_nome,
         tribunal: item.tribunal,
+        tribunais: [item.tribunal],
         numero_processo: item.numero_processo ?? null,
         padroes: [],
         polo_pessoa: item.polo_pessoa ?? 'indefinido',
@@ -92,8 +98,12 @@ function agruparPorProcesso(itens: OportunidadeItem[]): OportunidadeGrupo[] {
     if (!grupo.padroes.includes(item.padrao_detectado)) {
       grupo.padroes.push(item.padrao_detectado)
     }
-    if (item.data_disponibilizacao > grupo.data_mais_recente) {
+    if (item.tribunal && !grupo.tribunais.includes(item.tribunal)) {
+      grupo.tribunais.push(item.tribunal)
+    }
+    if (dataSortavel(item.data_disponibilizacao) > dataSortavel(grupo.data_mais_recente)) {
       grupo.data_mais_recente = item.data_disponibilizacao
+      grupo.tribunal = item.tribunal  // tribunal da pub mais recente
     }
   }
   return Array.from(mapa.values())
@@ -159,8 +169,8 @@ function GrupoCard({
             <span style={{ fontWeight: 700, fontSize: '0.97rem', color: 'var(--text-primary)' }}>
               {grupo.pessoa_nome}
             </span>
-            {grupo.tribunal && (
-              <span style={{
+            {grupo.tribunais.map(trib => (
+              <span key={trib} style={{
                 background: 'var(--primary-muted)',
                 color: 'var(--primary)',
                 borderRadius: 6,
@@ -168,9 +178,9 @@ function GrupoCard({
                 fontSize: '0.73rem',
                 fontWeight: 600,
               }}>
-                {grupo.tribunal}
+                {trib}
               </span>
-            )}
+            ))}
             {(() => {
               // Usa classificação IA quando disponível, senão fallback polo_pessoa
               const papelIA = grupo.ia_papel
@@ -549,7 +559,6 @@ export default function Oportunidades() {
   const [varrendo, setVarrendo] = useState(false)
   const [error, setError] = useState('')
   const [buscou, setBuscou] = useState(false)
-  const [novasOportunidades, setNovasOportunidades] = useState(0)
   const [grupoSelecionado, setGrupoSelecionado] = useState<OportunidadeGrupo | null>(null)
   const [resumo, setResumo] = useState<string | null>(null)
   const [resumoMeta, setResumoMeta] = useState<{ veredicto: string | null; papel: string | null; valor: string | null } | null>(null)
@@ -680,13 +689,6 @@ export default function Oportunidades() {
     }
   }
 
-  // Badge de novas oportunidades
-  useEffect(() => {
-    api.get<{ count: number }>('/v1/alertas/nao-lidos/count', { params: { tipo: 'OPORTUNIDADE_CREDITO' } })
-      .then(r => setNovasOportunidades(r.data.count ?? 0))
-      .catch(() => {})
-  }, [])
-
   // Carrega automaticamente ao montar
   useEffect(() => { buscar(dias) }, []) // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -715,18 +717,6 @@ export default function Oportunidades() {
             <h1 className="page-title" style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
               <TrendingUp size={28} style={{ color: 'var(--warning)' }} />
               Oportunidades de Crédito
-              {novasOportunidades > 0 && (
-                <span style={{
-                  background: 'var(--warning)',
-                  color: '#000',
-                  borderRadius: 20,
-                  padding: '2px 10px',
-                  fontSize: '0.75rem',
-                  fontWeight: 700,
-                }}>
-                  {novasOportunidades} nova{novasOportunidades > 1 ? 's' : ''}
-                </span>
-              )}
             </h1>
             <p className="page-subtitle">
               Publicações de devedores monitorados com sinais de recebimento de valores —
@@ -1055,16 +1045,16 @@ export default function Oportunidades() {
                 <div style={{ flex: 1, minWidth: 0 }}>
                   <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', marginBottom: 4 }}>
                     <h3 className="drawer-title" style={{ margin: 0 }}>{grupoSelecionado.pessoa_nome}</h3>
-                    {grupoSelecionado.tribunal && (
-                      <span style={{
+                    {grupoSelecionado.tribunais.map(trib => (
+                      <span key={trib} style={{
                         background: 'var(--primary-muted)',
                         color: 'var(--primary)',
                         borderRadius: 6,
                         padding: '1px 7px',
                         fontSize: '0.72rem',
                         fontWeight: 600,
-                      }}>{grupoSelecionado.tribunal}</span>
-                    )}
+                      }}>{trib}</span>
+                    ))}
                   </div>
                   <p className="drawer-processo-numero" style={{ margin: 0 }}>
                     {grupoSelecionado.numero_processo || '—'}
