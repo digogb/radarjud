@@ -266,6 +266,20 @@ def classificar_processo(
         raise RuntimeError(f"Erro ao classificar processo: {e}") from e
 
 
+def _coerir_perspectiva(result: dict) -> dict:
+    """Garante coerência do ponto de vista da parte monitorada.
+
+    A parte DEVEDORA não tem crédito a receber — o valor que aparece no processo é
+    devido POR ela à outra parte, não um crédito seu. Evita o combo contraditório
+    "Devedor + Crédito Identificado".
+    """
+    if result.get("papel") == "DEVEDOR":
+        result["veredicto"] = "SEM_CREDITO"
+        result["valor"] = None
+        result["valor_numerico"] = None
+    return result
+
+
 def _parsear_resposta(texto: str) -> dict:
     """Parseia a resposta da LLM. Tenta JSON (structured output); cai para regex."""
     result = {
@@ -291,7 +305,7 @@ def _parsear_resposta(texto: str) -> dict:
                 else _parse_valor_brl(result["valor"])
             )
             result["justificativa"] = data.get("justificativa")
-            return result
+            return _coerir_perspectiva(result)
     except (ValueError, TypeError):
         pass
 
@@ -313,4 +327,4 @@ def _parsear_resposta(texto: str) -> dict:
         result["justificativa"] = m.group(1).strip()
 
     result["valor_numerico"] = _parse_valor_brl(result["valor"])
-    return result
+    return _coerir_perspectiva(result)

@@ -444,58 +444,28 @@ const PAPEL_INFO: Record<string, { label: string; bg: string; color: string }> =
 
 function ResumoCard({
   resumo,
-  meta,
   fromCache,
 }: {
   resumo: string
-  meta: { veredicto: string | null; papel: string | null; valor: string | null } | null
+  // meta (papel/veredicto/valor do resumo) não é mais exibido — ver comentário abaixo.
+  meta?: { veredicto: string | null; papel: string | null; valor: string | null } | null
   fromCache: boolean
 }) {
-  const veredictoInfo = meta?.veredicto ? VEREDICTO_INFO[meta.veredicto] : null
-  const papelInfo = meta?.papel ? PAPEL_INFO[meta.papel] : null
-  const temValor = meta?.valor && meta.valor.toLowerCase() !== 'não identificado'
-
+  // Papel/veredicto/valor NÃO são exibidos aqui: a fonte única de verdade é a
+  // classificação (badges no topo do painel). O resumo é uma análise independente
+  // e mostrar seus próprios badges gerava contradição (ex.: "Devedor" x "Credor").
+  // Mantemos apenas o indicador de cache; o conteúdo (papel, valor) já está no texto.
   return (
     <div style={{ marginTop: 14 }}>
-      {/* Badges de metadados */}
-      {(veredictoInfo || papelInfo || temValor || fromCache) && (
-        <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginBottom: 10, alignItems: 'center' }}>
-          {veredictoInfo && (
-            <span style={{
-              padding: '3px 10px', borderRadius: 20,
-              fontSize: '0.73rem', fontWeight: 700,
-              background: veredictoInfo.bg, color: veredictoInfo.color,
-            }}>
-              {veredictoInfo.label}
-            </span>
-          )}
-          {papelInfo && (
-            <span style={{
-              padding: '3px 10px', borderRadius: 20,
-              fontSize: '0.73rem', fontWeight: 600,
-              background: papelInfo.bg, color: papelInfo.color,
-            }}>
-              {papelInfo.label}
-            </span>
-          )}
-          {temValor && (
-            <span style={{
-              padding: '3px 10px', borderRadius: 20,
-              fontSize: '0.73rem', fontWeight: 600,
-              background: 'var(--primary-muted)', color: 'var(--primary)',
-            }}>
-              {meta!.valor}
-            </span>
-          )}
-          {fromCache && (
-            <span style={{
-              marginLeft: 'auto',
-              fontSize: '0.7rem', color: 'var(--text-muted)',
-              display: 'flex', alignItems: 'center', gap: 4,
-            }} title="Resultado salvo em cache — nenhuma chamada à OpenAI foi feita">
-              ⚡ cache
-            </span>
-          )}
+      {fromCache && (
+        <div style={{ display: 'flex', marginBottom: 10, alignItems: 'center' }}>
+          <span style={{
+            marginLeft: 'auto',
+            fontSize: '0.7rem', color: 'var(--text-muted)',
+            display: 'flex', alignItems: 'center', gap: 4,
+          }} title="Resultado salvo em cache — nenhuma chamada à OpenAI foi feita">
+            ⚡ cache
+          </span>
         </div>
       )}
 
