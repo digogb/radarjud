@@ -31,6 +31,13 @@ Dadas publicações do DJe sobre um processo, determine DUAS coisas de forma IND
    JUSTIÇA DO TRABALHO: a reclamada/empregadora é DEVEDORA (paga as verbas); o reclamante/
    empregado é CREDOR. Empregadora que recorre ou agrava para evitar/reduzir o pagamento
    continua DEVEDORA — recorrer não a torna credora.
+   RÓTULO DE POLO NÃO É CONFIÁVEL: determine o papel pela SUBSTÂNCIA do texto, não pelo
+   rótulo "polo ativo/passivo" (que se inverte em recursos). Quem RECORRE não vira credor:
+   o AGRAVANTE de agravo de petição/execução e o EMBARGANTE de embargos à execução costumam
+   ser o EXECUTADO resistindo à cobrança → DEVEDOR.
+   DESCONSIDERAÇÃO DA PERSONALIDADE JURÍDICA: o sócio/pessoa cujos bens são alcançados para
+   pagar a dívida da empresa é DEVEDOR (responde pela obrigação), ainda que apareça como
+   "agravante" ou "polo ativo" ao recorrer da medida.
 
 2. VEREDICTO — indica se há crédito concreto A RECEBER PELA PARTE MONITORADA:
    - CREDITO_IDENTIFICADO: há alvará/mandado de levantamento, precatório, RPV ou valor
@@ -238,10 +245,16 @@ def classificar_processo(
         linhas.append(f"Parte monitorada: {pessoa_nome}")
     if numero_processo:
         linhas.append(f"Processo: {numero_processo}")
-    if partes["ativo"]:
-        linhas.append(f"Polo ativo: {', '.join(partes['ativo'])}")
-    if partes["passivo"]:
-        linhas.append(f"Polo passivo: {', '.join(partes['passivo'])}")
+    if partes["ativo"] or partes["passivo"]:
+        if partes["ativo"]:
+            linhas.append(f"Polo ativo (dica, pode estar invertida em recursos): {', '.join(partes['ativo'])}")
+        if partes["passivo"]:
+            linhas.append(f"Polo passivo (dica, pode estar invertida em recursos): {', '.join(partes['passivo'])}")
+        linhas.append(
+            "ATENÇÃO: os rótulos de polo acima vêm de metadados e frequentemente se invertem "
+            "em recursos de execução (o agravante costuma ser o executado). Determine o papel "
+            "pela SUBSTÂNCIA do texto, não pelo rótulo."
+        )
 
     linhas.append("")
     linhas.append("Publicações mais recentes:")
